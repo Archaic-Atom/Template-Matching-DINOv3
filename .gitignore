@@ -1,10 +1,16 @@
+# folder
 ResultImg/
 Submission/
 Checkpoint/
 log/
 Example/
 Result*/
+
+# python
 /*__pycache__*/
-sftp-config*.json
 *.pyc
-STTStereo.sublime-workspace
+
+# our tools
+sftp-config*.json
+*.sublime-workspace
+*.sublime-project

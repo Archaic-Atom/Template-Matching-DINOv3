@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 import time
-import JackFramework as jf
+import JackFramework as jf # type: ignore
 # import UserModelImplementation.user_define as user_def
 
 
 class YourDataloader(jf.UserTemplate.DataHandlerTemplate):
     """docstring for DataHandlerTemplate"""
 
-    def __init__(self, args: object) -> object:
+    def __init__(self, args: object) -> None:
         super().__init__(args)
         self.__args = args
         self.__result_str = jf.ResultStr()
