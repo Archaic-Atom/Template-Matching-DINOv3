@@ -17,6 +17,7 @@ except ImportError:
 class TM_Dataset(Dataset):
     def __init__(self, csv_path: str, train: bool = True):
         self.is_train = train
+        self.is_pre_train = True
         self.transform = transforms.ToTensor()
 
         df = pd.read_csv(csv_path)
@@ -25,9 +26,9 @@ class TM_Dataset(Dataset):
         self.rgb = df.iloc[:, 1].tolist()
         self.label = [json.loads(label) for label in df.iloc[:, 2].tolist()]
 
-        h, w = 64, 64
-        self.y = torch.arange(h).view(-1, 1)
-        self.x = torch.arange(w).view(1, -1)
+        self.h, self.w = 64, 64
+        self.y = torch.arange(self.h).view(-1, 1)
+        self.x = torch.arange(self.w).view(1, -1)
 
     def __getitem__(self, idx):
         sar_img = Image.open(self.sar[idx])
@@ -38,6 +39,10 @@ class TM_Dataset(Dataset):
 
         if self.is_train:
             sar_img, rgb_img, label = TrainAug(sar_img, rgb_img, label)
+
+        if self.is_pre_train:
+            x, y = label
+            rgb_img = rgb_img[y:y + self.h, x:x + self.w, :]
 
         sar_img = self.preprocess_image(sar_img, True)
         rgb_img = self.preprocess_image(rgb_img, False)
@@ -53,7 +58,7 @@ class TM_Dataset(Dataset):
         std = img.std([1, 2])
         return mean, std
 
-    def preprocess_image(self, img, duplicate_channels: bool = True):
+    def preprocess_image(self, img: np.ndarray, duplicate_channels: bool = True):
         if isinstance(img, np.ndarray):
             img = np.copy(img)
         img = self.transform(img)
@@ -66,13 +71,13 @@ class TM_Dataset(Dataset):
         img = transforms.Normalize(mean=mean.tolist(), std=std)(img)
         return img
 
-    def label_handler(self, label):
-        heatmap = self.GenHeatmap(label)
+    def label_handler(self, label) -> torch.Tensor:
+        heatmap = self.gen_heatmap(label)
         heatmap = torch.Tensor(heatmap)
         return heatmap
 
-    def GenHeatmap(self, label: list):
-        def Softmax(x):
+    def gen_heatmap(self, label: list) -> np.ndarray:
+        def softmax(x):
             exp_x = torch.exp(x)
             sum_exp_x = torch.sum(exp_x)
             y = exp_x.div_(sum_exp_x)
@@ -81,12 +86,12 @@ class TM_Dataset(Dataset):
         WEIGHT_DISTANCE = 1.2
         d = (self.x - label[0]) ** 2 + (self.y - label[1]) ** 2
         heatmap = -torch.sqrt(d) / WEIGHT_DISTANCE
-        heatmap = Softmax(heatmap)
+        heatmap = softmax(heatmap)
         return heatmap
 
 
 def main():
-    data = TM_Dataset(r"./Datasets/image_test.csv", train=True)
+    data = TM_Dataset(r"./Datasets/image_debug.csv", train=True)
     print("len(data):", len(data))
 
     training_dataloader = torch.utils.data.DataLoader(

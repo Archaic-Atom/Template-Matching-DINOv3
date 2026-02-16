@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import argparse
 import JackFramework as jf
-# import UserModelImplementation.user_define as user_def
+import UserModelImplementation.user_define as user_def
 
 # model and dataloader
 from UserModelImplementation import Models
@@ -20,12 +20,15 @@ class UserInterface(jf.UserTemplate.NetWorkInferenceTemplate):
         return model, dataloader
 
     def user_parser(self, parser: object) -> object:
-        # parser.add_argument('--startDisp', type=int, default=user_def.START_DISP,
-        #                    help='start disparity')
-        # return parser
-        return None
+        parser.add_argument('--root_path', type=str, default=user_def.ROOT_PATH,
+                            help='root path')
+        parser.add_argument('--dinov3_path', type=str, default=user_def.DINOv3_PATH,
+                            help='dinov3 path')
+        parser.add_argument('--pre_trained_weights_path', type=str,
+                            default=user_def.WEIGHTS_PATH, help='dinov3 weight path')
+        return parser
 
-    @staticmethod
+    @ staticmethod
     def __str2bool(arg: str) -> bool:
         if arg.lower() in ('yes', 'true', 't', 'y', '1'):
             return True

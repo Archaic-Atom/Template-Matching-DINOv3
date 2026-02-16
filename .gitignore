@@ -5,6 +5,7 @@ Checkpoint/
 log/
 Example/
 Result*/
+Weights/
 
 # python
 /*__pycache__*/
@@ -14,3 +15,6 @@ Result*/
 sftp-config*.json
 *.sublime-workspace
 *.sublime-project
+
+# MacOS
+.DS_Store
