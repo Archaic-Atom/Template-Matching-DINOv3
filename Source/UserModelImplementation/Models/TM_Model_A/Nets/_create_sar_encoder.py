@@ -1,137 +1,118 @@
-# -*- coding: utf-8 -*-
-"""SAR ConvNeXt encoder for 1/16 alignment with DINOv3 tokens.
-
-This module builds a ConvNeXt backbone (via timm) and projects the stride-16
-feature map to the DINO token embedding dimension (e.g., 1024 for ViT-L/16).
-"""
-
 from __future__ import annotations
+from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    import timm
-except ImportError as exc:
-    raise ImportError("Please install timm: python -m pip install timm") from exc
+
+def gn(num_channels: int, num_groups: int = 32) -> nn.GroupNorm:
+    g = num_groups if num_channels >= num_groups else 1
+    return nn.GroupNorm(g, num_channels)
 
 
-class ProjHead16(nn.Module):
-    """Projection head that maps stride-16 features to DINO token dimension.
+class BasicBlockGN(nn.Module):
+    """ResNet BasicBlock with GroupNorm (no BatchNorm)."""
+    expansion = 1
 
-    The head uses a lightweight 1x1 -> GN -> GELU -> 1x1 design, followed by
-    L2 normalization along the channel dimension to stabilize token similarity.
-    """
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.gn1 = gn(out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, stride=1, padding=1, bias=False)
+        self.gn2 = gn(out_ch)
+
+        self.downsample = None
+        if stride != 1 or in_ch != out_ch:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
+                gn(out_ch),
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+
+        out = self.conv1(x)
+        out = F.relu(self.gn1(out), inplace=True)
+        out = self.conv2(out)
+        out = self.gn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out = F.relu(out + identity, inplace=True)
+        return out
+
+
+class ProjHead(nn.Module):
+    """Project feature map to DINO dim + L2 normalize."""
 
     def __init__(self, in_ch: int, out_dim: int = 1024) -> None:
-        """Initializes the projection head.
-
-        Args:
-            in_ch: Number of input channels in the stride-16 feature map.
-            out_dim: Target embedding dimension (DINO token dim).
-        """
         super().__init__()
-        mid = max(out_dim, in_ch)
-        self._proj = nn.Sequential(
-            nn.Conv2d(in_ch, mid, kernel_size=1, bias=False),
-            nn.GroupNorm(num_groups=32 if mid >= 32 else 1, num_channels=mid),
+        mid = max(in_ch, out_dim)
+        self.proj = nn.Sequential(
+            nn.Conv2d(in_ch, mid, 1, bias=False),
+            gn(mid),
             nn.GELU(),
-            nn.Conv2d(mid, out_dim, kernel_size=1, bias=False),
+            nn.Conv2d(mid, out_dim, 1, bias=False),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x: Input feature map of shape (B, in_ch, H/16, W/16).
-
-        Returns:
-            Projected feature map of shape (B, out_dim, H/16, W/16), L2-normalized
-            along the channel dimension.
-        """
-        x = self._proj(x)
-        x = F.normalize(x, p=2, dim=1)
-        return x
+        x = self.proj(x)
+        return F.normalize(x, p=2, dim=1)
 
 
-class SarConvNeXt16(nn.Module):
-    """SAR encoder (ConvNeXt) for 1/16 alignment.
-
-    This encoder returns a projected stride-16 feature map ("sar16") whose
-    channel dimension matches the DINO token embedding dimension.
-    """
+class SarResNet16GN(nn.Module):
+    """ResNet-like CNN (GN) up to stride-16, for SAR->DINO alignment."""
 
     def __init__(
         self,
-        model_name: str = "convnext_tiny",
-        pretrained: bool = True,
-        dino_dim: int = 1024,
         in_chans: int = 3,
+        dino_dim: int = 1024,
+        layers: Tuple[int, int, int] = (3, 4, 6),  # like ResNet-34 up to layer3
+        channels: Tuple[int, int, int] = (64, 128, 256),
     ) -> None:
-        """Initializes the SAR encoder.
-
-        Args:
-            model_name: ConvNeXt variant name supported by timm (e.g., "convnext_tiny").
-            pretrained: Whether to load ImageNet-pretrained ConvNeXt weights.
-            dino_dim: DINO token embedding dimension (ViT-L/16 commonly uses 1024).
-            in_chans: Number of input channels (pseudo-color SAR uses 3).
-        """
         super().__init__()
+        c1, c2, c3 = channels
+        n1, n2, n3 = layers
 
-        # Only keep feature maps up to stride-16: (1/4, 1/8, 1/16).
-        self._backbone = timm.create_model(
-            model_name,
-            pretrained=pretrained,
-            in_chans=in_chans,
-            features_only=True,
-            out_indices=(0, 1, 2),
+        # Stem: stride=2 conv + stride=2 maxpool => total stride=4
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_chans, c1, kernel_size=7, stride=2, padding=3, bias=False),
+            gn(c1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         )
 
-        feat_channels = self._backbone.feature_info.channels()
-        c4 = feat_channels[2]  # Stride-16 stage (1/16).
-        self._proj16 = ProjHead16(in_ch=c4, out_dim=dino_dim)
+        self.layer1 = self._make_layer(c1, c1, n1, stride=1)  # stride=4
+        self.layer2 = self._make_layer(c1, c2, n2, stride=2)  # stride=8
+        self.layer3 = self._make_layer(c2, c3, n3, stride=2)  # stride=16
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Forward pass.
+        self.proj16 = ProjHead(in_ch=c3, out_dim=dino_dim)
 
-        Args:
-            x: Input SAR image tensor of shape (B, in_chans, H, W).
+    def _make_layer(self, in_ch: int, out_ch: int, blocks: int, stride: int) -> nn.Sequential:
+        layers = [BasicBlockGN(in_ch, out_ch, stride=stride)]
+        for _ in range(1, blocks):
+            layers.append(BasicBlockGN(out_ch, out_ch, stride=1))
+        return nn.Sequential(*layers)
 
-        Returns:
-            A dict containing:
-              - "sar16": Projected stride-16 feature map (B, dino_dim, H/16, W/16).
-              - "raw16": Raw stride-16 ConvNeXt feature map before projection.
-              - "C2": Stride-4 feature map (B, C2, H/4, W/4).
-              - "C3": Stride-8 feature map (B, C3, H/8, W/8).
-        """
-        feats = self._backbone(x)  # [C2(1/4), C3(1/8), C4(1/16)]
-        c2, c3, c4 = feats
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        x = self.stem(x)           # stride=4
+        x = self.layer1(x)
+        c2 = x                     # 1/4
 
-        sar16 = self._proj16(c4)
-        return {
-            "sar16": sar16,
-            "raw16": c4,
-            "C2": c2,
-            "C3": c3,
-        }
+        x = self.layer2(x)
+        c3 = x                     # 1/8
 
+        x = self.layer3(x)
+        c4 = x                     # 1/16
 
-def _demo() -> None:
-    """Runs a small shape check demo."""
-    model = SarConvNeXt16(
-        model_name="convnext_tiny",
-        pretrained=False,
-        dino_dim=1024,
-        in_chans=3,
-    )
-    x = torch.randn(2, 3, 64, 64)
-    out = model(x)
-    print("sar16:", out["sar16"].shape)  # Expected: (2, 1024, 4, 4)
-    print("raw16:", out["raw16"].shape)
-    print("C2:", out["C2"].shape)
-    print("C3:", out["C3"].shape)
+        sar16 = self.proj16(c4)    # B x 1024 x 4 x 4 (if input 64x64)
+        return {"sar16": sar16, "raw16": c4, "C2": c2, "C3": c3}
 
 
 if __name__ == "__main__":
-    _demo()
+    m = SarResNet16GN().cuda()
+    x = torch.randn(2, 3, 64, 64, device="cuda")
+    out = m(x)
+    print(out["sar16"].shape, out["C2"].shape, out["C3"].shape, out["raw16"].shape)

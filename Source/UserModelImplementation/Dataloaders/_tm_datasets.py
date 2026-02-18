@@ -15,12 +15,11 @@ except ImportError:
 
 
 class TM_Dataset(Dataset):
-    def __init__(self, csv_path: str, train: bool = True):
+    def __init__(self, csv_path: str, train: bool = True, is_pre_train: bool = True):
         self.is_train = train
-        self.is_pre_train = True
+        self.is_pre_train = is_pre_train
         self.transform = transforms.ToTensor()
-
-        df = pd.read_csv(csv_path)
+        df = self._read_csv(csv_path)
 
         self.sar = df.iloc[:, 0].tolist()
         self.rgb = df.iloc[:, 1].tolist()
@@ -29,6 +28,13 @@ class TM_Dataset(Dataset):
         self.h, self.w = 64, 64
         self.y = torch.arange(self.h).view(-1, 1)
         self.x = torch.arange(self.w).view(1, -1)
+
+    @staticmethod
+    def _read_csv(csv_path: str) -> pd:
+        usecols = ["SAR_Image", "RGB_Image", "Label"]
+        dtype = {"SAR_Image": "string", "RGB_Image": "string", "Label": "string"}
+
+        return pd.read_csv(csv_path, usecols=usecols, dtype=dtype, engine="pyarrow",)
 
     def __getitem__(self, idx):
         sar_img = Image.open(self.sar[idx])

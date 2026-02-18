@@ -54,8 +54,3 @@ if __name__ == '__main__':
         rand_tensor, n = get_dino_layers_id('dinov3_vitl16'), reshape = True,
         return_class_token = False, norm = False)
     print(f"Shape of the upsampled output features: {output_features[0].shape}")
-
-    # backbone = create_backbone('dinov2', 'dinov2_vitl14', os.path.join(ROOT_PATH, WEIGHTS_DINOV2_PATH))
-    # output_features = backbone.get_intermediate_layers(
-    #    rand_tensor, n = [4, 11, 17, 23], reshape = True, return_class_token = False, norm = False)
-    # print(f"Shape of the upsampled output features: {output_features[0].shape}")

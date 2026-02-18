@@ -26,13 +26,15 @@ class UserInterface(jf.UserTemplate.NetWorkInferenceTemplate):
                             help='dinov3 path')
         parser.add_argument('--pre_trained_weights_path', type=str,
                             default=user_def.WEIGHTS_PATH, help='dinov3 weight path')
+        parser.add_argument('--pre_trained', type=UserInterface.__str2bool,
+                            default=user_def.PRE_TRAINED,
+                            help='use or not use lr scheduler')
         return parser
 
-    @ staticmethod
+    @staticmethod
     def __str2bool(arg: str) -> bool:
         if arg.lower() in ('yes', 'true', 't', 'y', '1'):
             return True
-        elif arg.lower() in ('no', 'false', 'f', 'n', '0'):
+        if arg.lower() in ('no', 'false', 'f', 'n', '0'):
             return False
-        else:
-            raise argparse.ArgumentTypeError('Boolean value expected.')
+        raise argparse.ArgumentTypeError('Boolean value expected.')
