@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import os
 import json
 import torch
 import numpy as np
@@ -15,26 +16,36 @@ except ImportError:
 
 
 class TM_Dataset(Dataset):
-    def __init__(self, csv_path: str, train: bool = True, is_pre_train: bool = True):
+    def __init__(self, train_path: str, train: bool = True, is_pre_train: bool = True):
         self.is_train = train
         self.is_pre_train = is_pre_train
         self.transform = transforms.ToTensor()
-        df = self._read_csv(csv_path)
 
-        self.sar = df.iloc[:, 0].tolist()
-        self.rgb = df.iloc[:, 1].tolist()
-        self.label = [json.loads(label) for label in df.iloc[:, 2].tolist()]
+        _, ext = os.path.splitext(train_path)
+        if ext == ".csv":
+            self.sar, self.rgb, self.label = self._read_csv(train_path)
+        else:
+            self.sar, self.rgb, self.label = self._read_pt(train_path)
 
         self.h, self.w = 64, 64
         self.y = torch.arange(self.h).view(-1, 1)
         self.x = torch.arange(self.w).view(1, -1)
 
     @staticmethod
+    def _read_pt(pt_path: str) -> tuple:
+        data = torch.load(pt_path, map_location="cpu")
+        return data["sar_path"], data["rgb_path"], data["label"]
+
+    @staticmethod
     def _read_csv(csv_path: str) -> pd:
         usecols = ["SAR_Image", "RGB_Image", "Label"]
         dtype = {"SAR_Image": "string", "RGB_Image": "string", "Label": "string"}
 
-        return pd.read_csv(csv_path, usecols=usecols, dtype=dtype, engine="pyarrow",)
+        df = pd.read_csv(csv_path, usecols=usecols, dtype=dtype, engine="pyarrow",)
+        sar = df.iloc[:, 0].tolist()
+        rgb = df.iloc[:, 1].tolist()
+        label = [json.loads(label) for label in df.iloc[:, 2].tolist()]
+        return sar, rgb, label
 
     def __getitem__(self, idx):
         sar_img = Image.open(self.sar[idx])

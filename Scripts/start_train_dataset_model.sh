@@ -1,6 +1,6 @@
 train_gpus_id=0,1,2,3
 eva_gpus_id=0
-train_list_path='./Datasets/image_test.csv'
+train_list_path='./Datasets/image_test.pt'
 evalution_format='training'
 echo "test gpus id: "${train_gpus_id}
 echo "the list path is: "${train_list_path}
