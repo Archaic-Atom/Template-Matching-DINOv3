@@ -2,11 +2,9 @@
 import os
 import json
 import torch
-import numpy as np
 import pandas as pd
-from PIL import Image
 from torch.utils.data import Dataset
-from torchvision import transforms
+from torchvision.io import read_image
 
 
 try:
@@ -19,17 +17,30 @@ class TM_Dataset(Dataset):
     def __init__(self, train_path: str, train: bool = True, is_pre_train: bool = True):
         self.is_train = train
         self.is_pre_train = is_pre_train
-        self.transform = transforms.ToTensor()
 
         _, ext = os.path.splitext(train_path)
         if ext == ".csv":
-            self.sar, self.rgb, self.label = self._read_csv(train_path)
+            self.sar, self.rgb, labels = self._read_csv(train_path)
         else:
-            self.sar, self.rgb, self.label = self._read_pt(train_path)
+            self.sar, self.rgb, labels = self._read_pt(train_path)
+
+        self.label = torch.as_tensor(labels, dtype=torch.long)
+        if self.label.is_floating_point():
+            self.label = self.label.long()
+        self.label = self.label.contiguous()
+        self.label.share_memory_()
+        self.sar_name = [os.path.basename(path) for path in self.sar]
+        self.rgb_name = [os.path.basename(path) for path in self.rgb]
 
         self.h, self.w = 64, 64
-        self.y = torch.arange(self.h).view(-1, 1)
-        self.x = torch.arange(self.w).view(1, -1)
+        yy, xx = torch.meshgrid(
+            torch.arange(self.h, dtype=torch.float32),
+            torch.arange(self.w, dtype=torch.float32),
+            indexing="ij",
+        )
+        self._grid_y = yy.share_memory_()
+        self._grid_x = xx.share_memory_()
+        self._heatmap_cache = self._build_heatmap_cache()
 
     @staticmethod
     def _read_pt(pt_path: str) -> tuple:
@@ -48,63 +59,83 @@ class TM_Dataset(Dataset):
         return sar, rgb, label
 
     def __getitem__(self, idx):
-        sar_img = Image.open(self.sar[idx])
-        rgb_img = Image.open(self.rgb[idx])
-        sar_img_name = self.sar[idx].split("/")[-1]
-        rgb_img_name = self.rgb[idx].split("/")[-1]
+        sar_img = self._load_image(self.sar[idx])
+        rgb_img = self._load_image(self.rgb[idx])
+        sar_img_name = self.sar_name[idx]
+        rgb_img_name = self.rgb_name[idx]
         label = self.label[idx]
 
         if self.is_train:
-            sar_img, rgb_img, label = TrainAug(sar_img, rgb_img, label)
+            sar_img, rgb_img, label = TrainAug(
+                sar_img, rgb_img, label, rgb_img.shape[-2:], (self.h, self.w)
+            )
+
+        x, y = self._sanitize_label(label, rgb_img.shape[-2:])
 
         if self.is_pre_train:
-            x, y = label
-            rgb_img = rgb_img[y:y + self.h, x:x + self.w, :]
+            rgb_img = rgb_img[:, y:y + self.h, x:x + self.w]
 
         sar_img = self.preprocess_image(sar_img, True)
         rgb_img = self.preprocess_image(rgb_img, False)
-        label = self.label_handler(label)
+        heatmap = self.label_handler(x, y)
 
-        return sar_img, rgb_img, label, sar_img_name, rgb_img_name
+        return sar_img, rgb_img, heatmap, sar_img_name, rgb_img_name
 
     def __len__(self):
         return len(self.label)
 
     def calculate_mean_std(self, img: torch.Tensor):
-        mean = img.mean([1, 2])
-        std = img.std([1, 2])
+        mean = img.mean(dim=(1, 2), keepdim=True)
+        std = img.std(dim=(1, 2), keepdim=True).clamp_min(1e-7)
         return mean, std
 
-    def preprocess_image(self, img: np.ndarray, duplicate_channels: bool = True):
-        if isinstance(img, np.ndarray):
-            img = np.copy(img)
-        img = self.transform(img)
+    def preprocess_image(self, img: torch.Tensor, duplicate_channels: bool = True):
+        if img.dtype != torch.float32:
+            img = img.float()
+        img = img.div(255.0)
 
         if img.shape[0] == 1 and duplicate_channels:
             img = img.repeat(3, 1, 1)
 
         mean, std = self.calculate_mean_std(img)
-        std = [max(i, 1e-7) for i in std]
-        img = transforms.Normalize(mean=mean.tolist(), std=std)(img)
+        img = (img - mean) / std
         return img
 
-    def label_handler(self, label) -> torch.Tensor:
-        heatmap = self.gen_heatmap(label)
-        heatmap = torch.Tensor(heatmap)
+    def _sanitize_label(self, label: torch.Tensor, image_hw: tuple[int, int]) -> tuple[int, int]:
+        x = int(label[0])
+        y = int(label[1])
+        max_x = max(0, image_hw[1] - self.w)
+        max_y = max(0, image_hw[0] - self.h)
+        x = min(max(x, 0), max_x)
+        y = min(max(y, 0), max_y)
+        return x, y
+
+    def label_handler(self, x: int, y: int) -> torch.Tensor:
+        if 0 <= x < self.w and 0 <= y < self.h:
+            idx = y * self.w + x
+            return self._heatmap_cache[idx]
+        return self._generate_heatmap(x, y)
+
+    def _build_heatmap_cache(self) -> torch.Tensor:
+        grid = torch.stack([self._grid_x, self._grid_y], dim=0)
+        coords = grid.view(2, -1).permute(1, 0)
+        xx = grid[0].unsqueeze(0)
+        yy = grid[1].unsqueeze(0)
+        target_x = coords[:, 0].view(-1, 1, 1)
+        target_y = coords[:, 1].view(-1, 1, 1)
+        dist = torch.sqrt((xx - target_x) ** 2 + (yy - target_y) ** 2)
+        heatmaps = torch.exp(-dist / 1.2)
+        heatmaps /= heatmaps.sum(dim=(1, 2), keepdim=True)
+        return heatmaps.share_memory_()
+
+    def _generate_heatmap(self, x: int, y: int) -> torch.Tensor:
+        dist = torch.sqrt((self._grid_x - float(x)) ** 2 + (self._grid_y - float(y)) ** 2)
+        heatmap = torch.exp(-dist / 1.2)
+        heatmap /= heatmap.sum()
         return heatmap
 
-    def gen_heatmap(self, label: list) -> np.ndarray:
-        def softmax(x):
-            exp_x = torch.exp(x)
-            sum_exp_x = torch.sum(exp_x)
-            y = exp_x.div_(sum_exp_x)
-            return y
-
-        WEIGHT_DISTANCE = 1.2
-        d = (self.x - label[0]) ** 2 + (self.y - label[1]) ** 2
-        heatmap = -torch.sqrt(d) / WEIGHT_DISTANCE
-        heatmap = softmax(heatmap)
-        return heatmap
+    def _load_image(self, path: str) -> torch.Tensor:
+        return read_image(path)
 
 
 def main():

@@ -8,12 +8,12 @@ echo "start to predict disparity map"
 
 CUDA_VISIBLE_DEVICES=${train_gpus_id} python -u Source/main.py \
                         --mode train \
-                        --batchSize 8 \
-                        --gpu 4 \
+                        --batchSize 4 \
+                        --gpu 2 \
                         --trainListPath ${train_list_path} \
                         --auto_save_num 1 \
                         --dataloaderNum 8 \
-                        --imgNum 111360 \
+                        --imgNum 8145177 \
                         --maxEpochs 50 \
                         --sampleNum 1 \
                         --lr 0.001 \
