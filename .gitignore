@@ -1,20 +1,47 @@
-# folder
 ResultImg/
 Submission/
 Checkpoint/
 log/
 Example/
 Result*/
-Weights/
-
-# python
 /*__pycache__*/
-*.pyc
-
-# our tools
 sftp-config*.json
+*.pyc
+STTStereo.sublime-workspace
+# ── added 2026-05-16 ──
+# Training artifacts (bench / variant checkpoint dirs)
+Checkpoint_*/
+log_*/
+result_*/
+ResultImg_*/
+
+# Log files at repo root
+*.log
+*.log.bak
+
+# Sed/python in-place edit backups
+*.bak
+
+# Dataset list artifacts (regenerate via Tools/csv2pt.py if needed)
+Datasets/image_*.csv
+Datasets/image_*.pt
+Datasets/*.txt
+
+# Pretrained weights (too big for git; download separately)
+Weights/*.pth
+Weights/*.pt
+
+# Bench TSV outputs
+bench_E*_*.tsv
+bench_E*_sweep_results.tsv
+
+
+# IDE workspace files
 *.sublime-workspace
 *.sublime-project
 
-# MacOS
+# Mac
 .DS_Store
+
+# All pretrained weights
+Weights/

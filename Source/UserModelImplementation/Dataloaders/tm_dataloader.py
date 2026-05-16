@@ -9,6 +9,14 @@ try:
 except ImportError:
     from _tm_datasets import TM_Dataset
 
+try:
+    from ._tm_webdataset import build_tm_webdataset
+except ImportError:
+    try:
+        from _tm_webdataset import build_tm_webdataset
+    except ImportError:
+        build_tm_webdataset = None
+
 
 class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
     ID_SAR, ID_RGB, ID_LABEL = 0, 1, 2
@@ -27,8 +35,18 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
 
     def get_train_dataset(self, path: str, is_training: bool = True) -> object:
         args = self.__args
-        self.__train_dataset = TM_Dataset(
-            args.trainListPath, is_training, args.pre_trained)
+        if self.__use_webdataset():
+            self.__train_dataset = build_tm_webdataset(
+                args.trainListPath, is_train=is_training,
+                is_pre_train=args.pre_trained,
+                is_stage_2=bool(getattr(args, 'is_stage_2', False)),
+                dataset_size=args.imgNum,
+                distributed=bool(getattr(args, 'dist', False)),
+                shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)))
+        else:
+            self.__train_dataset = TM_Dataset(
+                args.trainListPath, is_training, args.pre_trained,
+                is_stage_2=bool(getattr(args, 'is_stage_2', False)))
         if not is_training:
             t = time.strftime("%Y%m%d-%H%M%S")
             with open(os.path.join(args.outputDir, t + '.txt'), 'w') as f:
@@ -37,8 +55,28 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
 
     def get_val_dataset(self, path: str) -> object:
         args = self.__args
-        self.__val_dataset = TM_Dataset(args.valListPath, False)
+        if self.__use_webdataset():
+            self.__val_dataset = build_tm_webdataset(
+                args.valListPath, is_train=False,
+                is_pre_train=args.pre_trained,
+                is_stage_2=bool(getattr(args, 'is_stage_2', False)),
+                dataset_size=max(int(getattr(args, 'valImgNum', 0)), 1),
+                distributed=bool(getattr(args, 'dist', False)),
+                shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)))
+        else:
+            self.__val_dataset = TM_Dataset(
+                args.valListPath, False, args.pre_trained,
+                is_stage_2=bool(getattr(args, 'is_stage_2', False)))
         return self.__val_dataset
+
+    def __use_webdataset(self) -> bool:
+        if getattr(self.__args, 'dataloaderType', 'mapstyle') != 'iterable':
+            return False
+        if build_tm_webdataset is None:
+            raise ImportError(
+                "dataloaderType=iterable requires the 'webdataset' package "
+                "and _tm_webdataset.py to be importable")
+        return True
 
     def split_data(self, batch_data: tuple, is_training: bool) -> list:
         if is_training:

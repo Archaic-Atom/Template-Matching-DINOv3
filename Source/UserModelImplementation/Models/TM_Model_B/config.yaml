@@ -1,0 +1,77 @@
+# TM_Model_B — ablation: no Stage-1 alignment.
+#
+# Architecture identical to TM_Model_A. Difference: SAR encoder is NOT
+# initialized from a Stage-1 contrastive-aligned checkpoint — it is trained
+# from scratch in Stage 2. Used to demonstrate the value of Stage 1.
+#
+# How the ablation is enforced:
+#   training.stage_1.load_pretrained_sar: false
+#   → _interface_base.load_model() skips checkpoint loading entirely when
+#     the framework calls it for this variant.
+
+name: TM_Model_B
+description: Ablation — no Stage-1 alignment; SAR encoder trained from scratch in Stage 2.
+
+architecture:
+  rgb_encoder:
+    type: DinoV3Backbone
+    freeze: true
+    args:
+      name: dinov3_vitl16
+      repo_path: "${root_path}/Source/Libs/dinov3/"
+      weights_path: "${root_path}/Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth"
+
+  sar_encoder:
+    type: SarResNet16GN
+    args:
+      in_chans: 3
+      dino_dim: 1024
+      layers: [3, 4, 6]
+      channels: [64, 128, 256]
+
+  matching:
+    type: StandardMatchingHead
+    args:
+      dino_dim: 1024
+      matching_dim: 128
+      fine_dim: 32
+      fine_margin: 4
+      sar_size: 64
+
+training:
+  stage_1:
+    load_pretrained_sar: false           # ← THE ABLATION
+    loss:
+      type: alignment_loss
+      tau: 0.07
+      radius: 1
+      lambda_global: 0.1
+    optimizer:
+      type: sgd
+      momentum: 0.9
+      weight_decay: 0.0001
+      lr_factor: 0.8
+      lr_patience: 5
+
+  stage_2:
+    freeze_sar_encoder: false           # ← B: SAR encoder trained jointly with matching head
+                                        #     (the ablation: no Stage 1 → joint Stage 2 from scratch)
+    loss:
+      type: two_stage_matching_loss
+      match_w4: 1.0
+      match_w8: 0.5
+      match_sigma4: 1.0
+      match_sigma8: 1.0
+      match_sigma_fine: 1.0
+      match_w_fine: 1.0
+      fine_warmup_epochs: 3
+    optimizer:
+      type: adamw
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+      lr_factor: 0.8
+      lr_patience: 5
+
+inference:
+  argmax_type: hard
+  primary_stride: 4

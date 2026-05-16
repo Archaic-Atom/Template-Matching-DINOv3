@@ -14,9 +14,21 @@ except ImportError:
 
 
 class TM_Dataset(Dataset):
-    def __init__(self, train_path: str, train: bool = True, is_pre_train: bool = True):
+    def __init__(self, train_path: str, train: bool = True,
+                 is_pre_train: bool = True, is_stage_2: bool = False):
+        """
+        Args:
+            train_path:   path to .csv or .pt list file.
+            train:        True for training augmentation, False for eval.
+            is_pre_train: Stage 1 mode — crops RGB to the SAR-aligned 64x64 patch
+                          and returns a heatmap label. Ignored when is_stage_2=True.
+            is_stage_2:   Stage 2 (template matching) mode — keeps the full RGB
+                          search region and returns the displacement (x, y) as a
+                          float tensor instead of a heatmap.
+        """
         self.is_train = train
         self.is_pre_train = is_pre_train
+        self.is_stage_2 = is_stage_2
 
         _, ext = os.path.splitext(train_path)
         if ext == ".csv":
@@ -72,14 +84,20 @@ class TM_Dataset(Dataset):
 
         x, y = self._sanitize_label(label, rgb_img.shape[-2:])
 
-        if self.is_pre_train:
+        # Stage 1 (pre-train): crop RGB to the matched 64x64 patch.
+        # Stage 2: keep the full RGB search region.
+        if self.is_pre_train and not self.is_stage_2:
             rgb_img = rgb_img[:, y:y + self.h, x:x + self.w]
 
         sar_img = self.preprocess_image(sar_img, True)
         rgb_img = self.preprocess_image(rgb_img, False)
-        heatmap = self.label_handler(x, y)
 
-        return sar_img, rgb_img, heatmap, sar_img_name, rgb_img_name
+        if self.is_stage_2:
+            label_out = torch.tensor([x, y], dtype=torch.float32)
+        else:
+            label_out = self.label_handler(x, y)
+
+        return sar_img, rgb_img, label_out, sar_img_name, rgb_img_name
 
     def __len__(self):
         return len(self.label)
