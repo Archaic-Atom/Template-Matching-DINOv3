@@ -214,7 +214,7 @@ def build_tm_webdataset(shard_pattern: str, is_train: bool, is_pre_train: bool,
     nodesplitter = _balanced_split_by_node if distributed else wds.single_node_only
     pipeline = wds.WebDataset(
         shards,
-        shardshuffle=100 if is_train else False,
+        shardshuffle=256 if is_train else False,
         nodesplitter=nodesplitter,
         workersplitter=wds.split_by_worker,
         handler=wds.warn_and_continue,
