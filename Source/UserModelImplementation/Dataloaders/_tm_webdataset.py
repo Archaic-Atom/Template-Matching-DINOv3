@@ -154,6 +154,28 @@ def _expand_shard_pattern(pattern: str) -> Iterable[str]:
     return matches
 
 
+def _count_shards(pattern: str) -> int:
+    """Count shards covered by ``pattern`` so callers can size the
+    ``shardshuffle`` buffer to cover the entire list (= a true random
+    permutation per epoch, not a sliding-window shuffle).
+
+    Supports brace patterns (``...{000000..000254}.tar``) and globs.
+    Returns 1 (the no-shuffle sentinel) if the count can't be resolved.
+    """
+    if '{' in pattern and '}' in pattern:
+        try:
+            import braceexpand
+            return sum(1 for _ in braceexpand.braceexpand(pattern))
+        except ImportError:
+            import re
+            m = re.search(r'\{(\d+)\.\.(\d+)(?:\.\.\d+)?\}', pattern)
+            if m:
+                lo, hi = int(m.group(1)), int(m.group(2))
+                return hi - lo + 1
+            return 1
+    return len(glob.glob(pattern))
+
+
 def _balanced_split_by_node(src):
     """Custom nodesplitter ensuring all DDP ranks get the same number of shards.
 
@@ -211,10 +233,17 @@ def build_tm_webdataset(shard_pattern: str, is_train: bool, is_pre_train: bool,
 
     shards = _expand_shard_pattern(shard_pattern)
 
+    # shardshuffle = num_shards gives a true random permutation per epoch
+    # (the default sliding-window shuffle only mixes locally, which combined
+    # with structured intra-shard packing produces non-stationary loss
+    # within an epoch). Memory cost: one URL string per shard ≈ negligible.
+    num_shards = _count_shards(shard_pattern)
+    shard_shuffle = num_shards if is_train and num_shards > 1 else False
+
     nodesplitter = _balanced_split_by_node if distributed else wds.single_node_only
     pipeline = wds.WebDataset(
         shards,
-        shardshuffle=256 if is_train else False,
+        shardshuffle=shard_shuffle,
         nodesplitter=nodesplitter,
         workersplitter=wds.split_by_worker,
         handler=wds.warn_and_continue,
