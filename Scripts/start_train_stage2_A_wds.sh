@@ -32,7 +32,10 @@ export COLUMNS=200
 
 mkdir -p "${model_dir}"
 
-# Auto-copy the latest Stage-1 ckpt into A's Stage-2 modelDir if empty.
+# Auto-bootstrap from latest Stage-1 ckpt if Stage-2 modelDir is empty.
+# Stage 1 uses SGD optimizer, Stage 2 uses AdamW → opt state is incompatible.
+# strip_stage1_opt.py drops opt_* and resets epoch=-1 so JackFramework
+# treats this as a fresh Stage-2 start.
 ckpt_count=$(ls "${model_dir}"/model_epoch_*.pth 2>/dev/null | wc -l)
 if [ "${ckpt_count}" -eq 0 ]; then
     latest=$(ls -t "${src_stage1_dir}"/model_epoch_*.pth 2>/dev/null | head -1)
@@ -40,9 +43,16 @@ if [ "${ckpt_count}" -eq 0 ]; then
         echo "ERROR: ${model_dir} empty AND ${src_stage1_dir} has no Stage-1 ckpt."
         exit 1
     fi
-    echo "  bootstrapping ${model_dir} from ${latest}"
-    cp "${latest}" "${model_dir}/"
-    [ -f "${src_stage1_dir}/checkpoint.list" ] && cp "${src_stage1_dir}/checkpoint.list" "${model_dir}/"
+    init_name="model_stage1_init.pth"
+    echo "  bootstrapping ${model_dir}/${init_name} from ${latest} (strip opt + reset epoch)"
+    python Source/Tools/strip_stage1_opt.py "${latest}" "${model_dir}/${init_name}"
+    # checkpoint.list format JackFramework expects:
+    #   line 1: "last model name:<filename>"
+    #   line 2+: history filenames
+    {
+        echo "last model name:${init_name}"
+        echo "${init_name}"
+    } > "${model_dir}/checkpoint.list"
 fi
 
 echo "[TM_Model_A] Stage 2 — baseline matching head"

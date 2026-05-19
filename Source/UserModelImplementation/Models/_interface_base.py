@@ -235,8 +235,43 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
         return True
 
     def load_opt(self, opt: object, checkpoint: dict, model_id: int) -> bool:
-        # Stage-1 ckpt's optimizer state should not carry into Stage-2 (different optimizer family).
-        return not self._is_stage_2
+        """Restore optimizer state if compatible; gracefully skip otherwise.
+
+        优化器状态恢复：兼容则加载，不兼容则跳过（冷启动）。
+
+        Three cases this method covers:
+          1. Same-stage resume (Stage 1 → Stage 1, Stage 2 → Stage 2): opt
+             types match, load_state_dict succeeds.
+          2. Stage 1 → Stage 2 bootstrap: Stage 1's SGD state is incompatible
+             with Stage 2's AdamW. load_state_dict raises ValueError; we log
+             and start optimizer fresh.
+          3. Bootstrap from a strip_stage1_opt.py-cleaned ckpt: opt_0 key is
+             missing entirely; we log and start optimizer fresh.
+
+        Framework contract: returning True means "user handled this; do NOT
+        fall back to ModelSaver.load_opt". We always return True so the
+        framework's strict load (which raises KeyError on missing opt_0) is
+        never reached.
+        """
+        key = f'opt_{model_id}'
+        if key not in checkpoint:
+            jf.log.info(
+                f"[{type(self).__name__}] no '{key}' in ckpt — "
+                f"starting optimizer from fresh init"
+            )
+            return True
+        try:
+            opt.load_state_dict(checkpoint[key])
+            jf.log.info(
+                f"[{type(self).__name__}] restored '{key}' from ckpt"
+            )
+        except (ValueError, KeyError) as e:
+            jf.log.warning(
+                f"[{type(self).__name__}] failed to load '{key}' "
+                f"(likely Stage 1 SGD → Stage 2 AdamW mismatch): {e}. "
+                f"Starting optimizer from fresh init."
+            )
+        return True
 
     def save_model(self, epoch: int, model_list: list, opt_list: list) -> dict:
         assert len(model_list) == len(opt_list)
