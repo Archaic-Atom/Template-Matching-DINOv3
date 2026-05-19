@@ -64,6 +64,19 @@ def global_cosine_loss(sar16: torch.Tensor, rgb16: torch.Tensor) -> torch.Tensor
     return (1.0 - (g_sar * g_rgb).sum(dim=1)).mean()
 
 
+def alignment_cos_accuracy(sar16: torch.Tensor, rgb16: torch.Tensor) -> torch.Tensor:
+    """Per-position cosine similarity between SAR and RGB features.
+
+    Normalize each position's feature vector along the channel dim, take
+    the dot product per position, then mean over (B, H, W). Range
+    [-1, 1]; higher means better aligned. Reported as Stage-1 accuracy
+    so loss and accuracy carry distinct, comparable signals.
+    """
+    s = F.normalize(sar16, p=2, dim=1)
+    r = F.normalize(rgb16, p=2, dim=1)
+    return (s * r).sum(dim=1).mean()
+
+
 @register("alignment_loss")
 def alignment_loss(
     sar16: torch.Tensor,

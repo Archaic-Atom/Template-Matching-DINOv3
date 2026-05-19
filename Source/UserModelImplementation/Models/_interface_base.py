@@ -140,15 +140,20 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
         )]
 
     def accuracy(self, output_data: list, label_data: list, model_id: int) -> list:
-        """Report mean pixel error (Stage 2) or alignment loss (Stage 1).
+        """Report mean pixel error (Stage 2) or feature cosine similarity (Stage 1).
 
         For Stage 2, the decoding mode is driven by config.inference.argmax_type:
           - 'hard'           : argmax over fine heatmap, anchor + integer offset
           - 'soft_subpixel'  : argmax + 2D quadratic peak fit for sub-pixel offset
         """
         if not self._is_stage_2:
-            # Stage 1: report alignment loss as proxy accuracy
-            return self.loss(output_data, label_data, model_id)
+            from ._components.alignment_loss import alignment_cos_accuracy
+            output = output_data[self.ID_PRED]
+            with torch.no_grad():
+                return [alignment_cos_accuracy(
+                    output['sar_feat']['sar16'],
+                    output['rbg_feat'][3],
+                )]
 
         from ._components.matching_loss import two_stage_matching_accuracy
         from ._components.sub_pixel import quadratic_subpixel_fit

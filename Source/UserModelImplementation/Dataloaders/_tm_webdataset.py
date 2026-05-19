@@ -16,6 +16,7 @@ remains identical between the mapstyle and iterable paths.
 import io
 import os
 import glob
+import tarfile
 from typing import Iterable, Optional
 
 import torch
@@ -142,38 +143,61 @@ class TMSampleProcessor:
         return sar_img, rgb_img, label_out, sar_name, rgb_name
 
 
-def _expand_shard_pattern(pattern: str) -> Iterable[str]:
-    """Accept either a brace pattern (``shard-{000000..000255}.tar``) or a
-    glob (``shards/*.tar``). WebDataset handles braces natively; we only
-    fall back to glob if no brace is present."""
-    if '{' in pattern and '}' in pattern:
-        return pattern
-    matches = sorted(glob.glob(pattern))
-    if not matches:
-        raise FileNotFoundError(f"No shards matched: {pattern}")
-    return matches
+def _expand_shards_to_list(pattern):
+    """Resolve a brace pattern (``...{lo..hi}.tar``), a glob, or an
+    iterable of paths into a concrete sorted list of shard file paths.
 
-
-def _count_shards(pattern: str) -> int:
-    """Count shards covered by ``pattern`` so callers can size the
-    ``shardshuffle`` buffer to cover the entire list (= a true random
-    permutation per epoch, not a sliding-window shuffle).
-
-    Supports brace patterns (``...{000000..000254}.tar``) and globs.
-    Returns 1 (the no-shuffle sentinel) if the count can't be resolved.
+    Returns an empty list if nothing matches; the caller decides whether
+    that's an error.
     """
-    if '{' in pattern and '}' in pattern:
-        try:
-            import braceexpand
-            return sum(1 for _ in braceexpand.braceexpand(pattern))
-        except ImportError:
-            import re
-            m = re.search(r'\{(\d+)\.\.(\d+)(?:\.\.\d+)?\}', pattern)
-            if m:
+    if isinstance(pattern, str):
+        if '{' in pattern and '}' in pattern:
+            try:
+                import braceexpand
+                return list(braceexpand.braceexpand(pattern))
+            except ImportError:
+                import re
+                m = re.search(r'\{(\d+)\.\.(\d+)(?:\.\.\d+)?\}', pattern)
+                if not m:
+                    return [pattern]
                 lo, hi = int(m.group(1)), int(m.group(2))
-                return hi - lo + 1
-            return 1
-    return len(glob.glob(pattern))
+                width = len(m.group(1))
+                prefix = pattern[:m.start()]
+                suffix = pattern[m.end():]
+                return [f"{prefix}{i:0{width}d}{suffix}" for i in range(lo, hi + 1)]
+        return sorted(glob.glob(pattern))
+    return list(pattern)
+
+
+def _count_one_shard(path: str) -> int:
+    """Count samples in a single shard (1 sample = 3 tar entries).
+
+    Slow (~5 s cold on HDD): only used in the legacy code path when the
+    caller passes a brace pattern instead of a CSV manifest.
+    """
+    with tarfile.open(path, 'r') as tf:
+        return sum(1 for _ in tf) // 3
+
+
+def _read_path_csv(csv_path: str):
+    """Parse a shard manifest CSV (header: ``path,file_num``).
+
+    Returns ``(shard_paths, sample_counts)`` parallel lists. The CSV is
+    the source of truth for sample counts; we do not re-probe disk.
+    Generate / hand-maintain ``Datasets/shard_training_path.csv`` and
+    ``Datasets/shard_testing_path.csv`` to keep this in sync with the
+    on-disk shards.
+    """
+    import csv
+    paths, counts = [], []
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            paths.append(row['path'])
+            counts.append(int(row['file_num']))
+    if not paths:
+        raise ValueError(f"empty shard manifest: {csv_path}")
+    return paths, counts
 
 
 def _balanced_split_by_node(src):
@@ -188,8 +212,7 @@ def _balanced_split_by_node(src):
 
     Here we apply the same interleave then truncate each rank's list to
     floor(num_shards / world_size). Tail shards (at most
-    world_size - 1 of them) are dropped — < 1.2% of the data at our
-    255-shard / 4-rank setup.
+    world_size - 1 of them) are dropped.
     """
     from itertools import islice
     try:
@@ -207,42 +230,56 @@ def _balanced_split_by_node(src):
 
 
 def build_tm_webdataset(shard_pattern: str, is_train: bool, is_pre_train: bool,
-                        is_stage_2: bool, dataset_size: int,
+                        is_stage_2: bool,
                         shuffle_buffer: int = 100000,
-                        distributed: bool = False) -> object:
+                        distributed: bool = False,
+                        batch_size: int = 1,
+                        num_workers: int = 1) -> object:
     """Build the WebDataset pipeline ready to hand to ``DataLoader``.
 
-    No ``with_epoch(N)`` is applied: that caps each *iterator instance*
-    via ``islice``, but PyTorch DataLoader copies the dataset to every
-    worker, so a per-worker cap cannot express "one framework epoch ==
-    one true pass." Instead we rely on natural exhaustion:
-    ``split_by_node`` narrows shards per rank, ``split_by_worker``
-    narrows them per worker, then each worker drains its share and
-    StopIteration propagates.
+    ``shard_pattern`` accepts two forms:
+      * Path ending in ``.csv`` — a shard manifest with header
+        ``path,file_num``. Sample counts are read directly; no disk
+        probing. Generate / hand-maintain
+        ``Datasets/shard_training_path.csv`` and
+        ``Datasets/shard_testing_path.csv``.
+      * Anything else — a brace pattern (``shard-{lo..hi}.tar``) or
+        glob. Legacy path: probes first + last shard for sample counts
+        (~5 s each on cold HDD).
 
-    Coverage per framework epoch: every shard assigned to this rank is
-    read exactly once (only integer-division rounding from
-    ``num_shards / world_size`` can drop a shard, which is at most one).
+    A per-worker ``with_epoch(N)`` cap is applied so every rank emits
+    the same number of samples per epoch regardless of shard size
+    imbalance (e.g. a partial last shard):
+        per_rank_iter = floor(real_total / (batch_size * world_size))
+    Per-epoch total = per_rank_iter * batch_size * world_size, dropping
+    at most (batch_size * world_size - 1) random samples to reach a
+    clean multiple of N*BS. All shards are used; no shard is wholesale
+    dropped. The dropped samples differ each epoch because of shuffle.
 
-    Caveat: the bar denominator JackFramework derives from
-    ``imgNum / batchSize`` may not match the actual per-rank iter count
-    for the first epoch; the framework logs "input images numbers is
-    different the number of datasets" and self-corrects via
-    ``set_training_iteration`` for subsequent epochs.
+    Independent of caller-provided imgNum/valImgNum (those are
+    framework display/control hints, not ground truth on disk).
     """
+    if isinstance(shard_pattern, str) and shard_pattern.endswith('.csv'):
+        shard_list, sample_counts = _read_path_csv(shard_pattern)
+        real_total = sum(sample_counts)
+    else:
+        shard_list = _expand_shards_to_list(shard_pattern)
+        if not shard_list:
+            raise FileNotFoundError(f"No shards matched: {shard_pattern}")
+        nominal = _count_one_shard(shard_list[0])
+        last_count = _count_one_shard(shard_list[-1]) if len(shard_list) > 1 else nominal
+        real_total = nominal * (len(shard_list) - 1) + last_count
 
-    shards = _expand_shard_pattern(shard_pattern)
-
+    num_shards = len(shard_list)
     # shardshuffle = num_shards gives a true random permutation per epoch
-    # (the default sliding-window shuffle only mixes locally, which combined
-    # with structured intra-shard packing produces non-stationary loss
-    # within an epoch). Memory cost: one URL string per shard ≈ negligible.
-    num_shards = _count_shards(shard_pattern)
+    # (the default sliding-window shuffle only mixes locally, which
+    # combined with structured intra-shard packing produces non-stationary
+    # loss within an epoch). Memory cost is one URL string per shard.
     shard_shuffle = num_shards if is_train and num_shards > 1 else False
 
     nodesplitter = _balanced_split_by_node if distributed else wds.single_node_only
     pipeline = wds.WebDataset(
-        shards,
+        shard_list,
         shardshuffle=shard_shuffle,
         nodesplitter=nodesplitter,
         workersplitter=wds.split_by_worker,
@@ -256,8 +293,10 @@ def build_tm_webdataset(shard_pattern: str, is_train: bool, is_pre_train: bool,
         is_train=is_train, is_pre_train=is_pre_train,
         is_stage_2=is_stage_2)
 
-    # Per-rank epoch size: split_by_node already narrowed shards across ranks;
-    # with_epoch should match that narrowing.
+    # Per-worker sample cap = floor(real_total / (bs * ws)) * bs // nw.
+    # ``real_total`` came from the CSV manifest (preferred) or two-shard
+    # probe (legacy). Drops < (bs * ws) random samples to hit a multiple
+    # of N*BS; partial last shard is included.
     world_size = 1
     if distributed:
         try:
@@ -266,8 +305,11 @@ def build_tm_webdataset(shard_pattern: str, is_train: bool, is_pre_train: bool,
                 world_size = dist.get_world_size()
         except Exception:
             world_size = 1
-    per_rank_epoch = max(1, dataset_size // world_size)
-    del per_rank_epoch  # iter cap removed; pipeline drains naturally
+    nw = max(1, int(num_workers))
+    bs = max(1, int(batch_size))
+    per_rank_iter = max(1, real_total // (bs * world_size))
+    per_worker_samples = max(1, (per_rank_iter * bs) // nw)
+    pipeline = pipeline.with_epoch(per_worker_samples)
 
     pipeline = (
         pipeline

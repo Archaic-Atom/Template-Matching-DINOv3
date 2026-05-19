@@ -40,9 +40,10 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
                 args.trainListPath, is_train=is_training,
                 is_pre_train=args.pre_trained,
                 is_stage_2=bool(getattr(args, 'is_stage_2', False)),
-                dataset_size=args.imgNum,
                 distributed=bool(getattr(args, 'dist', False)),
-                shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)))
+                shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)),
+                batch_size=int(getattr(args, 'batchSize', 1)),
+                num_workers=int(getattr(args, 'dataloaderNum', 1)))
         else:
             self.__train_dataset = TM_Dataset(
                 args.trainListPath, is_training, args.pre_trained,
@@ -60,9 +61,10 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
                 args.valListPath, is_train=False,
                 is_pre_train=args.pre_trained,
                 is_stage_2=bool(getattr(args, 'is_stage_2', False)),
-                dataset_size=max(int(getattr(args, 'valImgNum', 0)), 1),
                 distributed=bool(getattr(args, 'dist', False)),
-                shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)))
+                shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)),
+                batch_size=int(getattr(args, 'batchSize', 1)),
+                num_workers=int(getattr(args, 'dataloaderNum', 1)))
         else:
             self.__val_dataset = TM_Dataset(
                 args.valListPath, False, args.pre_trained,
