@@ -97,13 +97,24 @@ def two_stage_matching_loss(output: dict,
                             coarse_kwargs: Optional[dict] = None,
                             fine_sigma: float = 1.0,
                             fine_weight: float = 1.0,
-                            fine_pos_weight: Optional[float] = None) -> torch.Tensor:
+                            fine_pos_weight: Optional[float] = None):
+    """A/B/D Stage 2 loss: coarse multi-stride + fine head.
+
+    Returns:
+        Tuple ``(total, components)`` for multi-term logging.
+        ``components`` keys: ``coarse``, ``fine``.
+    """
     coarse_kwargs = coarse_kwargs or {}
     L_coarse = matching_loss(output['heatmap_per_stride'], displacement_xy, **coarse_kwargs)
     L_fine = fine_matching_loss(
         output['heatmap_fine'], displacement_xy, output['fine_anchor_pix'],
         sigma=fine_sigma, pos_weight=fine_pos_weight)
-    return L_coarse + fine_weight * L_fine
+    total = L_coarse + fine_weight * L_fine
+    components = {
+        'coarse': L_coarse.detach(),
+        'fine': L_fine.detach(),
+    }
+    return total, components
 
 
 # ---------------------------------------------------------------------------
@@ -180,12 +191,16 @@ def two_stage_matching_loss_config(output: dict,
                                    displacement_xy: torch.Tensor,
                                    *,
                                    config: dict,
-                                   current_epoch: int) -> torch.Tensor:
+                                   current_epoch: int):
     """Config-driven Stage-2 loss wrapper.
 
     Reads the yaml loss block, computes fine_weight from current_epoch +
     fine_warmup_epochs (linear ramp from 0), and dispatches to
     two_stage_matching_loss.
+
+    Returns:
+        Tuple ``(total, components)``; ``components`` keys are
+        ``coarse`` and ``fine`` — propagated from the inner loss.
 
     Expected config keys (all optional, defaults match TM_Model_A):
         match_w4, match_w8                    coarse scale weights

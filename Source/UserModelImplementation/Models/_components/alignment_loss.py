@@ -84,8 +84,23 @@ def alignment_loss(
     tau: float = 0.07,
     radius: int = 1,
     lambda_global: float = 0.1,
-) -> torch.Tensor:
-    """Combined Stage-1 alignment loss: local PatchNCE + global cosine."""
+):
+    """Combined Stage-1 alignment loss: local PatchNCE + global cosine.
+
+    组合 Stage 1 对齐损失：局部 PatchNCE + 全局余弦。
+
+    Returns:
+        Tuple ``(total, components)`` where ``total`` is the backward-traced
+        sum and ``components`` is a dict of detached per-term losses for
+        logging via ``user_loss`` → l1, l2, ...
+        返回 ``(total, components)``：total 是反传用的总损失；components
+        是逐项 detach 后的 scalar dict，给框架显示成 l1、l2、...
+    """
     l_local = soft_window_patchnce_loss(sar16, rgb16, tau=tau, radius=radius)
     l_global = global_cosine_loss(sar16, rgb16)
-    return l_local + lambda_global * l_global
+    total = l_local + lambda_global * l_global
+    components = {
+        'patch_nce': l_local.detach(),
+        'global_cos': l_global.detach(),
+    }
+    return total, components

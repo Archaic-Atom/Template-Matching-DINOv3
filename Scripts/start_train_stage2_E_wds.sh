@@ -30,7 +30,7 @@ src_stage2_dir='./Checkpoint_C_stage2/'
 model_dir='./Checkpoint_E_stage2/'
 log_file='./start_train_stage2_E_wds.log'
 
-export COLUMNS=200
+export COLUMNS=300
 
 mkdir -p "${model_dir}"
 
@@ -57,9 +57,9 @@ echo "  val list:    ${val_list_path}"
 echo "  modelDir:    ${model_dir}"
 echo "  log file:    ${log_file}"
 
-nohup bash -c "CUDA_VISIBLE_DEVICES=${train_gpus_id} python -u Source/main.py \
+nohup bash -c "JF_PROGRESS_COLUMNS=300 CUDA_VISIBLE_DEVICES=${train_gpus_id} python -u Source/main.py \
     --mode train \
-    --batchSize 8 \
+    --batchSize 32 \
     --gpu 4 \
     --port 8887 \
     --trainListPath '${train_list_path}' \
@@ -69,7 +69,7 @@ nohup bash -c "CUDA_VISIBLE_DEVICES=${train_gpus_id} python -u Source/main.py \
     --dataloaderType iterable \
     --imgNum 65275274 \
     --valImgNum 8145176 \
-    --maxEpochs 4 \
+    --maxEpochs 6 \
     --sampleNum 1 \
     --lr 1e-3 \
     --dist True \

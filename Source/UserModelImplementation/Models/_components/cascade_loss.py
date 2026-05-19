@@ -62,8 +62,15 @@ def cascade_loss(output: dict,
                  displacement_xy: torch.Tensor,
                  *,
                  config: dict,
-                 current_epoch: int) -> torch.Tensor:
-    """Combined cascade loss across stride 4 / 8 / 2 / 1 with warmup on fine levels."""
+                 current_epoch: int):
+    """Combined cascade loss across stride 4 / 8 / 2 / 1 with warmup on fine levels.
+
+    Returns:
+        Tuple ``(total, components)``. ``components`` keys (always present):
+        ``coarse_s4``, ``coarse_s8`` (zero if stride-8 disabled), ``cascade_s2``,
+        ``cascade_s1`` — raw per-level losses (before weight + warmup), useful
+        for diagnosing whether each level is learning.
+    """
     # --- Coarse levels (full-image, no windowing) ---
     heatmaps_full = output['heatmap_per_stride']  # {4: H_4} or {4, 8}
     pos_weight_coarse = config.get('match_pos_weight', None)
@@ -75,6 +82,7 @@ def cascade_loss(output: dict,
                                pos_weight=pos_weight_coarse)
 
     L = w_4 * L_4
+    L_8 = None
     if 8 in heatmaps_full:
         sigma_8 = float(config.get('match_sigma8', 1.0))
         w_8 = float(config.get('match_w8', 1.0))
@@ -107,4 +115,11 @@ def cascade_loss(output: dict,
     L_1 = _windowed_bce(H_1, target_1, sigma_cells=sigma_1, pos_weight=pos_weight_fine)
     L = L + w_1 * _linear_warmup(current_epoch, warmup_1) * L_1
 
-    return L
+    zero = torch.zeros((), device=L.device, dtype=L.dtype)
+    components = {
+        'coarse_s4': L_4.detach(),
+        'coarse_s8': L_8.detach() if L_8 is not None else zero,
+        'cascade_s2': L_2.detach(),
+        'cascade_s1': L_1.detach(),
+    }
+    return L, components

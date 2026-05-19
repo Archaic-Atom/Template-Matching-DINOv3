@@ -120,6 +120,15 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
         return [output]
 
     def loss(self, output_data: list, label_data: list, model_id: int) -> list:
+        """Return ``[total_loss, *components]`` so framework displays l0..ln.
+
+        Convention (matches JackFramework's ``loss[OPT_LOSS_ID].backward()``):
+          - ``loss[0]`` is the total optimized loss (autograd-traced)
+          - ``loss[1..n]`` are detached component scalars (logging only)
+
+        损失返回结构：第 0 个是反传用的总损失，之后是各组成项的 detach 标量，
+        框架会显示成 l1、l2、…。
+        """
         output = output_data[self.ID_PRED]
         stage_key = 'stage_2' if self._is_stage_2 else 'stage_1'
         loss_cfg = self._config['training'][stage_key]['loss']
@@ -127,24 +136,41 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
 
         if self._is_stage_2:
             disp_xy = label_data[self.ID_LABEL]
-            return [loss_fn(
+            total, components = loss_fn(
                 output, disp_xy,
                 config=loss_cfg,
                 current_epoch=self._current_epoch,
-            )]
+            )
+            return [total, *components.values()]
+
         # Stage 1
-        return [loss_fn(
+        total, components = loss_fn(
             output['sar_feat']['sar16'],
             output['rbg_feat'][3],
             **{k: v for k, v in loss_cfg.items() if k != 'type'},
-        )]
+        )
+        return [total, *components.values()]
 
     def accuracy(self, output_data: list, label_data: list, model_id: int) -> list:
-        """Report mean pixel error (Stage 2) or feature cosine similarity (Stage 1).
+        """Report one accuracy metric per available output head.
 
-        For Stage 2, the decoding mode is driven by config.inference.argmax_type:
-          - 'hard'           : argmax over fine heatmap, anchor + integer offset
-          - 'soft_subpixel'  : argmax + 2D quadratic peak fit for sub-pixel offset
+        模型有几个输出头就报几个精度指标。框架显示成 a0、a1、…，
+        a0 是 "headline"（与最终推理用的 argmax_type 一致），后续是各 level
+        的 component 误差，便于诊断"哪一级 head 在收敛"。
+
+        Stage 1 (alignment):
+          a0 = per-position cosine similarity at GT positions
+
+        Stage 2 with StandardMatchingHead (A/B/D):
+          a0 = pixel err at fine head (sub-pix if argmax_type=soft_subpixel)
+          a1 = pixel err at coarse fused (stride-4 + stride-8)
+          a2 = pixel err at stride-4 alone
+
+        Stage 2 with CascadeHead (C/E):
+          a0 = pixel err at cascade stride-1 (sub-pix if soft_subpixel)
+          a1 = pixel err at cascade stride-2
+          a2 = pixel err at coarse fused
+          a3 = pixel err at stride-4 alone
         """
         if not self._is_stage_2:
             from ._components.alignment_loss import alignment_cos_accuracy
@@ -155,35 +181,86 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
                     output['rbg_feat'][3],
                 )]
 
-        from ._components.matching_loss import two_stage_matching_accuracy
+        from ._components.matching_loss import (
+            two_stage_matching_accuracy,
+            matching_accuracy,
+            peak_displacement,
+        )
         from ._components.sub_pixel import quadratic_subpixel_fit
 
         output = output_data[self.ID_PRED]
         disp_xy = label_data[self.ID_LABEL]
         argmax_type = self._config.get('inference', {}).get('argmax_type', 'hard')
         primary_stride = int(self._config.get('inference', {}).get('primary_stride', 4))
+        loss_cfg = self._config['training']['stage_2']['loss']
+        scale_weights = {
+            4: float(loss_cfg.get('match_w4', 1.0)),
+            8: float(loss_cfg.get('match_w8', 1.0)),
+        }
 
         with torch.no_grad():
-            if argmax_type == 'hard':
-                # Default: integer-pixel pred from fine head
-                err_px = two_stage_matching_accuracy(
-                    output, disp_xy, primary_stride=primary_stride,
-                    scale_weights={
-                        4: float(self._config['training']['stage_2']['loss'].get('match_w4', 1.0)),
-                        8: float(self._config['training']['stage_2']['loss'].get('match_w8', 1.0)),
-                    },
-                )
-                return [err_px]
-            elif argmax_type == 'soft_subpixel':
-                # Apply quadratic sub-pixel fit to the fine heatmap
-                fine_logits = output['heatmap_fine']
-                anchor = output['fine_anchor_pix'].float()
-                peak_int, sub_off = quadratic_subpixel_fit(fine_logits)
-                pred = anchor + peak_int.float() + sub_off
-                err = ((pred - disp_xy.float()) ** 2).sum(dim=1).sqrt()
-                return [err.mean()]
+            metrics = []
+
+            has_cascade = 'heatmap_cascade' in output
+            has_fine = 'heatmap_fine' in output
+
+            # ----- a0: primary (matches inference) -----
+            # 主指标：跟推理用的 argmax 一致。
+            if has_cascade:
+                # CascadeHead's stride-1 cascade output.
+                primary_logits = output['heatmap_cascade'][1]
+                primary_anchor = output['fine_anchor_pix'].float()
+            elif has_fine:
+                primary_logits = output['heatmap_fine']
+                primary_anchor = output['fine_anchor_pix'].float()
             else:
-                raise ValueError(f"Unknown inference.argmax_type: {argmax_type!r}")
+                primary_logits = None
+
+            if primary_logits is not None:
+                if argmax_type == 'soft_subpixel':
+                    peak_int, sub_off = quadratic_subpixel_fit(primary_logits)
+                    pred = primary_anchor + peak_int.float() + sub_off
+                else:
+                    B = primary_logits.shape[0]
+                    h_f, w_f = primary_logits.shape[-2:]
+                    flat = primary_logits.view(B, -1)
+                    idx = flat.argmax(dim=1)
+                    vy = (idx // w_f).float()
+                    ux = (idx % w_f).float()
+                    pred = primary_anchor + torch.stack([ux, vy], dim=1)
+                err_primary = ((pred - disp_xy.float()) ** 2).sum(dim=1).sqrt().mean()
+                metrics.append(err_primary)
+
+            # ----- a1: cascade stride-2 (C/E only) -----
+            if has_cascade:
+                H_2 = output['heatmap_cascade'][2]
+                anchor_2 = output['cascade_anchor_2_cells'].float() * 2.0  # cells -> pixels
+                B = H_2.shape[0]
+                h2, w2 = H_2.shape[-2:]
+                flat = H_2.view(B, -1)
+                idx = flat.argmax(dim=1)
+                vy = (idx // w2).float() * 2.0
+                ux = (idx % w2).float() * 2.0
+                pred_s2 = anchor_2 + torch.stack([ux, vy], dim=1)
+                err_s2 = ((pred_s2 - disp_xy.float()) ** 2).sum(dim=1).sqrt().mean()
+                metrics.append(err_s2)
+
+            # ----- a1 (A/B/D) or a2 (C/E): coarse fused -----
+            if 'heatmap_per_stride' in output:
+                err_fused = matching_accuracy(
+                    output['heatmap_per_stride'], disp_xy,
+                    primary_stride=primary_stride, scale_weights=scale_weights,
+                )
+                metrics.append(err_fused)
+
+                # Last: err at stride-4 alone (always the strongest coarse signal)
+                hps = output['heatmap_per_stride']
+                if 4 in hps:
+                    pred_s4 = peak_displacement(hps[4], stride=4)
+                    err_s4 = ((pred_s4 - disp_xy.float()) ** 2).sum(dim=1).sqrt().mean()
+                    metrics.append(err_s4)
+
+            return metrics
 
     # -----------------------------------------------------------------
     # Per-epoch hooks
