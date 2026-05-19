@@ -7,11 +7,14 @@ import JackFramework as jf
 # finishes and we've verified state_dict compatibility.
 from .TM_Model_A import TMModelAInterface
 
-# TM_Model_B/C/D: yaml-driven variants, each is a thin ComponentBasedInterface
+# TM_Model_B/C/D/E: yaml-driven variants, each is a thin ComponentBasedInterface
 # subclass that only sets CONFIG_PATH. Components live in _components/.
+# E shares architecture with C and reuses C's trained ckpt — only differs at
+# inference (soft sub-pixel vs hard argmax).
 from .TM_Model_B import TMModelBInterface
 from .TM_Model_C import TMModelCInterface
 from .TM_Model_D import TMModelDInterface
+from .TM_Model_E import TMModelEInterface
 
 
 def _get_model_dict() -> dict:
@@ -20,6 +23,7 @@ def _get_model_dict() -> dict:
         'TM_Model_B': TMModelBInterface,
         'TM_Model_C': TMModelCInterface,
         'TM_Model_D': TMModelDInterface,
+        'TM_Model_E': TMModelEInterface,
     }
 
 

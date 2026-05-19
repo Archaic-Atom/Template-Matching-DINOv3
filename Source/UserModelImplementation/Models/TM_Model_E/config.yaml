@@ -1,0 +1,92 @@
+# TM_Model_E — full method: cascade fine head + sub-pixel refinement.
+#
+# Architecture and training procedure identical to TM_Model_C (3-level
+# cascade fine head). The only difference is at inference time: the fine
+# stride-1 heatmap's peak is refined via 2D quadratic fit, recovering
+# sub-pixel offsets in [-0.5, 0.5]. State_dict is byte-compatible with C,
+# so E does NOT require its own Stage-2 training run — copy C's
+# Checkpoint_C_stage2/model_epoch_N.pth into ./Checkpoint_E_stage2/ and
+# run eval (or simply launch eval with TM_Model_E's config).
+#
+# This is the paper's "Our final method" row: cascade head (architectural
+# contribution) + sub-pixel post-process (free precision improvement).
+#
+# 完整方法：cascade 头 + sub-pixel 精修。架构、训练与 TM_Model_C 完全
+# 相同；仅 eval 时使用 soft_subpixel argmax。与 C 共用 ckpt。
+# Paper 中作为最终方法行（cascade + sub-pix 联合）。
+
+name: TM_Model_E
+description: Full method — cascade fine head + sub-pixel quadratic refinement at inference.
+
+architecture:
+  rgb_encoder:
+    type: DinoV3Backbone
+    freeze: true
+    args:
+      name: dinov3_vitl16
+      repo_path: "${root_path}/Source/Libs/dinov3/"
+      weights_path: "${root_path}/Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth"
+
+  sar_encoder:
+    type: SarResNet16GN
+    args:
+      in_chans: 3
+      dino_dim: 1024
+      layers: [3, 4, 6]
+      channels: [64, 128, 256]
+
+  matching:
+    type: CascadeHead
+    args:
+      dino_dim: 1024
+      matching_dim: 128
+      sar_size: 64
+      raw_stem_dim: 16             # raw-image stem output channels
+      use_stride_8_coarse: true    # keep stride-8 coarse for parity with A
+      cascade_window_2: 4          # ± cells at stride-2 around 2×coarse argmax → 9×9 H_2
+      cascade_window_1: 4          # ± pixels at stride-1 around 2×stride-2 argmax → 9×9 H_1
+
+training:
+  stage_1:
+    load_pretrained_sar: true
+    loss:
+      type: alignment_loss
+      tau: 0.07
+      radius: 1
+      lambda_global: 0.1
+    optimizer:
+      type: sgd
+      momentum: 0.9
+      weight_decay: 0.0001
+      lr_factor: 0.8
+      lr_patience: 5
+
+  stage_2:
+    freeze_sar_encoder: true       # cascade trains; SAR encoder inherits Stage 1
+    loss:
+      type: cascade_loss
+      # Coarse (same units as two_stage_matching_loss):
+      match_w4: 1.0
+      match_w8: 0.5
+      match_sigma4: 1.0
+      match_sigma8: 1.0
+      # Cascade levels:
+      match_w_2: 0.5
+      match_sigma_2: 1.0
+      warmup_epoch_2: 2            # ramp stride-2 loss over first 2 epochs
+      match_w_1: 1.0
+      match_sigma_1: 1.0
+      warmup_epoch_1: 4            # ramp stride-1 loss over first 4 epochs
+    optimizer:
+      type: adamw
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+      lr_factor: 0.8
+      lr_patience: 5
+
+inference:
+  # E = C's architecture + sub-pixel refinement. Quadratic peak fit over
+  # the 3×3 neighborhood around the fine stride-1 argmax recovers offsets
+  # in [-0.5, 0.5]. Eval-only knob; training is identical to C.
+  argmax_type: soft_subpixel
+  primary_stride: 4

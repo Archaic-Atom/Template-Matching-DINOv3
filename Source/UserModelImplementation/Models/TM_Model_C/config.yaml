@@ -79,5 +79,8 @@ training:
       lr_patience: 5
 
 inference:
-  argmax_type: soft_subpixel       # cascade still benefits from sub-pixel fit on H_1
+  # C isolates the cascade architecture contribution → hard argmax only.
+  # The sub-pixel quadratic refinement is ablated separately as TM_Model_E
+  # (cascade + sub-pixel), so the table can attribute each improvement.
+  argmax_type: hard
   primary_stride: 4
