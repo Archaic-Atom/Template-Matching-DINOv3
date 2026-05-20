@@ -1,16 +1,35 @@
 # -*- coding: utf-8 -*
 import JackFramework as jf
 
-from .Your_Model.inference import YourModelInterface
+# TM_Model_A: legacy path (its own _create_*.py + Loss/*.py + Nets/model.py).
+# A is currently training under nohup — its files are intentionally NOT
+# touched. Phase 2 will refactor A onto the yaml-driven path after Stage 1
+# finishes and we've verified state_dict compatibility.
+from .TM_Model_A import TMModelAInterface
+
+# TM_Model_B/C/D/E: yaml-driven variants, each is a thin ComponentBasedInterface
+# subclass that only sets CONFIG_PATH. Components live in _components/.
+# E shares architecture with C and reuses C's trained ckpt — only differs at
+# inference (soft sub-pixel vs hard argmax).
+from .TM_Model_B import TMModelBInterface
+from .TM_Model_C import TMModelCInterface
+from .TM_Model_D import TMModelDInterface
+from .TM_Model_E import TMModelEInterface
 
 
-def model_zoo(args: object, name: str) -> object:
-    for case in jf.Switch(name):
-        if case('YourMode'):
-            jf.log.info("Enter the YourMode model")
-            model = YourModelInterface(args)
-            break
-        if case(''):
-            model = None
-            jf.log.error("The model's name is error!!!")
-    return model
+def _get_model_dict() -> dict:
+    return {
+        'TM_Model_A': TMModelAInterface,
+        'TM_Model_B': TMModelBInterface,
+        'TM_Model_C': TMModelCInterface,
+        'TM_Model_D': TMModelDInterface,
+        'TM_Model_E': TMModelEInterface,
+    }
+
+
+def model_zoo(args: object, model_name: str) -> object:
+    model_dict = _get_model_dict()
+    assert model_name in model_dict, (
+        f"Unknown --modelName {model_name!r}. Registered: {list(model_dict)}"
+    )
+    return model_dict[model_name](args)

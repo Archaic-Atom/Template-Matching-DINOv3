@@ -1,10 +1,10 @@
 # -*coding: utf-8 -*-
 import JackFramework as jf
-from UserModelImplementation.user_interface import UserInterface
+from UserModelImplementation import UserInterface
 
 
 def main() -> None:
-    app = jf.Application(UserInterface(), "your network name")
+    app = jf.Application(UserInterface(), "Template Matching model")
     app.start()
 
 

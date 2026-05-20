@@ -1,96 +1,75 @@
 # -*- coding: utf-8 -*-
 import random
-import numpy as np
+from typing import Tuple
+
+import torch
+from torch import Tensor
+
+ROTATE_PROB = 0.5
+FLIP_PROB = 0.5
 
 
-def TrainAug(img1, img2, label):
-    img1, img2, label = RandomRotate(img1, img2, label)
-    img1, img2, label = RandomFlip(img1, img2, label)
-    return img1, img2, label
+def TrainAug(
+        img1: Tensor,
+        img2: Tensor,
+        label: Tensor,
+        image_hw: Tuple[int, int],
+        crop_hw: Tuple[int, int]) -> Tuple[Tensor, Tensor, Tensor]:
+    new_label = label
+    if random.random() < ROTATE_PROB:
+        img1, img2, new_label = RandomRotate(img1, img2, new_label, image_hw, crop_hw)
+    if random.random() < FLIP_PROB:
+        img1, img2, new_label = RandomFlip(img1, img2, new_label, image_hw, crop_hw)
+    return img1, img2, new_label
 
 
-def RandomRotate(img1, img2, label):
+def RandomRotate(
+        img1: Tensor,
+        img2: Tensor,
+        label: Tensor,
+        image_hw: Tuple[int, int],
+        crop_hw: Tuple[int, int]) -> Tuple[Tensor, Tensor, Tensor]:
+    k = random.randint(1, 3)
+    rotated_img1 = torch.rot90(img1, k, dims=(-2, -1))
+    rotated_img2 = torch.rot90(img2, k, dims=(-2, -1))
 
-    rotate_prob = np.random.randint(low=1, high=100)
-
-    if rotate_prob > 101:
-        return img1, img2, label
-
-    k = random.choice((1, 2, 3, 4))
-    new_img1 = np.rot90(img1, k)
-    new_img2 = np.rot90(img2, k)
-
-    x = label[1]
-    y = label[0]
+    height, width = image_hw
+    crop_h, crop_w = crop_hw
+    x = int(label[0])
+    y = int(label[1])
 
     if k == 1:
-        new_x = 128 - 64 - y
-        new_y = x
-    elif k == 2:
-        new_x = 128 - 64 - x
-        new_y = 128 - 64 - y
-    elif k == 3:
         new_x = y
-        new_y = 128 - 64 - x
-    elif k == 4:
-        new_x = x
-        new_y = y
+        new_y = width - crop_w - x
+    elif k == 2:
+        new_x = width - crop_w - x
+        new_y = height - crop_h - y
     else:
-        print(f"{k}")
-        print("error")
+        new_x = height - crop_h - y
+        new_y = x
 
-    return new_img1, new_img2, [new_y, new_x]
-
-
-def RandomFlip(img1, img2, label):
-
-    flip_prob = np.random.randint(low=1, high=100)
-    if flip_prob > 101:
-        return img1, img2, label
-
-    choice_H = random.choice((0, 1))
-    choice_W = random.choice((0, 1))
-
-    x = label[0]
-    y = label[1]
-
-    if choice_H == 1:
-        new_img1 = np.flip(img1, 0)
-        new_img2 = np.flip(img2, 0)
-        new_x = x
-        new_y = 128 - 64 - y
-    elif choice_H == 0:
-        new_img1 = img1
-        new_img2 = img2
-        new_x = x
-        new_y = y
-    else:
-        print("chioce_H:{}".format(choice_H))
-        print("error")
-
-    if choice_W == 1:
-        new_img1 = np.flip(new_img1, 1)
-        new_img2 = np.flip(new_img2, 1)
-        new_x = 128 - 64 - new_x
-        new_y = new_y
-    elif choice_W == 0:
-        new_img1 = new_img1
-        new_img2 = new_img2
-        new_x = new_x
-        new_y = new_y
-    else:
-        print("chioce_W:{}".format(choice_W))
-        print("error")
-
-    return new_img1, new_img2, [new_x, new_y]
+    return rotated_img1, rotated_img2, label.new_tensor((new_x, new_y))
 
 
-if __name__ == '__main__':
-    img1 = np.random.rand(128, 128)
-    img2 = np.random.rand(64, 64)
-    label = [24, 8]
-    img1, img2, label = TrainAug(img1, img2, label)
-    print(type(img1))
-    print(img1.shape)
-    print(img2.shape)
-    print(label)
+def RandomFlip(
+        img1: Tensor,
+        img2: Tensor,
+        label: Tensor,
+        image_hw: Tuple[int, int],
+        crop_hw: Tuple[int, int]) -> Tuple[Tensor, Tensor, Tensor]:
+    height, width = image_hw
+    crop_h, crop_w = crop_hw
+    x = int(label[0])
+    y = int(label[1])
+
+    if random.random() < 0.5:
+        img1 = torch.flip(img1, dims=(-2,))
+        img2 = torch.flip(img2, dims=(-2,))
+        y = height - crop_h - y
+
+    if random.random() < 0.5:
+        img1 = torch.flip(img1, dims=(-1,))
+        img2 = torch.flip(img2, dims=(-1,))
+        x = width - crop_w - x
+
+    return img1, img2, label.new_tensor((x, y))
