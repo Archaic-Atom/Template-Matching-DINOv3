@@ -123,7 +123,13 @@ class TMSampleProcessor:
         sar_name = f'{key}.sar.png'
         rgb_name = f'{key}.rgb.png'
 
-        if self.is_train:
+        # Stage 1 alignment keeps geometric augmentation (rotate / flip).
+        # Stage 2 matching disables it: user empirically observed that the
+        # rotate/flip aug is too strong for the matching head and slows /
+        # destabilises convergence. So we only augment when NOT in stage 2.
+        # Stage 1 训练保留几何增强；Stage 2 匹配关闭——经验上增强太强,
+        # 影响匹配头收敛。
+        if self.is_train and not self.is_stage_2:
             sar_img, rgb_img, label = TrainAug(
                 sar_img, rgb_img, label, rgb_img.shape[-2:], (self.h, self.w))
 

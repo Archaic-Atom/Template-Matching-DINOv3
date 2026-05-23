@@ -8,8 +8,8 @@
 #
 # State_dict is byte-identical to TM_Model_A → D reuses A's trained Stage-2
 # ckpt at eval time. This script bootstraps Checkpoint_D_stage2/ from
-# Checkpoint_A_stage2/ and launches training with maxEpochs=4. If A is
-# already at epoch 4, JackFramework will skip training and run val only
+# Checkpoint_A_stage2/ and launches training with maxEpochs=10. If A is
+# already at epoch 9, JackFramework will skip training and run val only
 # (eval pass with D's soft_subpixel argmax → ablation row D's numbers).
 #
 # To rule out training variance for the paper, set src_stage2_dir to
@@ -70,7 +70,7 @@ nohup bash -c "JF_PROGRESS_COLUMNS=300 CUDA_VISIBLE_DEVICES=${train_gpus_id} pyt
     --dataloaderType iterable \
     --imgNum 65275274 \
     --valImgNum 8145176 \
-    --maxEpochs 6 \
+    --maxEpochs 10 \
     --sampleNum 1 \
     --lr 1e-3 \
     --dist True \

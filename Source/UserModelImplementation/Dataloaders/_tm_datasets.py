@@ -77,7 +77,12 @@ class TM_Dataset(Dataset):
         rgb_img_name = self.rgb_name[idx]
         label = self.label[idx]
 
-        if self.is_train:
+        # Stage 1 alignment keeps geometric augmentation; Stage 2 matching
+        # disables it (rotate/flip aug empirically too strong, hurts matching
+        # convergence). Mirrors the same gate in _tm_webdataset.py so both
+        # dataloader backends agree.
+        # 与 _tm_webdataset.py 一致：Stage 2 关闭几何增强。
+        if self.is_train and not self.is_stage_2:
             sar_img, rgb_img, label = TrainAug(
                 sar_img, rgb_img, label, rgb_img.shape[-2:], (self.h, self.w)
             )
