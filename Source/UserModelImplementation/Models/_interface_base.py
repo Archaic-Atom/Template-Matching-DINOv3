@@ -315,8 +315,8 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
     def pretreatment(self, epoch: int, rank: object) -> None:
         self._current_epoch = int(epoch)
 
-    def postprocess(self, epoch: int, rank: object,
-                    ave_tower_loss: list, ave_tower_acc: list) -> None:
+    def post_process(self, epoch: int, rank: object,
+                     ave_tower_loss: list, ave_tower_acc: list) -> None:
         # In ``--mode test`` the framework calls user_post_process(0) once
         # after the test loop finishes; piggy-back on it to trigger the
         # dataloader's per-rank merge + final-CSV emission.

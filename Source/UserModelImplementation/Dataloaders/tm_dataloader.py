@@ -264,6 +264,15 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
         if model_id != self.ID_MODEL:
             return
 
+        # The framework hands us the raw inference() return value, which is
+        # a per-model list (``[output_dict]``); loss() uses the same pattern
+        # via ``output_data[self.ID_PRED]``. Unwrap here so the dict checks
+        # below work.
+        # framework 传进来的是 inference() 返回的列表（[output_dict]）;
+        # loss() 用 output_data[self.ID_PRED] 同样的方式解包，这里也得解。
+        if isinstance(output_data, (list, tuple)):
+            output_data = output_data[self.ID_PRED]
+
         if '_test_pred_xy' not in output_data:
             jf.log.warning(
                 '[test] save_result: _test_pred_xy missing in output; '
@@ -282,12 +291,20 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
             labels = torch.as_tensor(labels)
 
         batch = pred_xy.shape[0]
+        # ``args.batchSize`` is the configured (full) batch size; ``batch``
+        # above is the actual size of this prediction (smaller on a
+        # partial last batch). The global sample_idx MUST multiply by the
+        # configured size, otherwise a partial last batch produces indices
+        # that collide with earlier full-batch iterations
+        # (e.g. iter=3, batch=1 → idx 3 collides with iter=0, b=3).
+        # 必须用配置的 batchSize，partial last batch 用实际 shape 会撞 index。
+        full_batch = int(getattr(self.__args, 'batchSize', batch))
         for b in range(batch):
             # Per-sample globally-unique index: img_id is unique per
-            # (rank, iteration), so (img_id * batch + b) is unique across
-            # ranks and iterations.
+            # (rank, iteration), so (img_id * full_batch + b) is unique
+            # across ranks and iterations.
             # 每个样本的全局唯一 index。
-            sample_idx = int(img_id) * batch + b
+            sample_idx = int(img_id) * full_batch + b
             row = (
                 sample_idx,
                 sar_names[b], rgb_names[b],
