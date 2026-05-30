@@ -30,10 +30,14 @@ architecture:
       channels: [64, 128, 256]
 
   matching:
-    type: CascadeHead
+    type: CascadeHeadJBU
     args:
+      # 2026-05-27 redesign: FeatUp JBU at coarse heads, matching_dim 128 → 256.
+      # Cascade levels (stride-2, stride-1) keep their LearnedUpsampler since
+      # those operate on already-projected matching_dim features, not ViT raw
+      # features. State_dict NOT compatible with the old dim-128 CascadeHead.
       dino_dim: 1024
-      matching_dim: 128
+      matching_dim: 256
       sar_size: 64
       raw_stem_dim: 16             # raw-image stem output channels
       use_stride_8_coarse: true    # keep stride-8 coarse for parity with A
@@ -52,18 +56,22 @@ training:
       type: sgd
       momentum: 0.9
       weight_decay: 0.0001
-      lr_factor: 0.8
-      lr_patience: 5
 
   stage_2:
     freeze_sar_encoder: true       # cascade trains; SAR encoder inherits Stage 1
     loss:
       type: cascade_loss
-      # Coarse (same units as two_stage_matching_loss):
+      # 2026-05-27 σ alignment with A/B/D:
+      #   stride-4: σ=1 cell = 4 px (unchanged)
+      #   stride-8: σ=0.5 cell = 4 px (tightened from 1 cell = 8 px)
+      #   stride-2: σ=1 cell = 2 px (unchanged — natural cascade ladder)
+      #   stride-1: σ=1 cell = 1 px (unchanged — sub-pixel)
+      # 物理 σ 序列: 4 → 4 → 2 → 1 px，cascade 阶级化收紧。
+      # Coarse:
       match_w4: 1.0
       match_w8: 0.5
       match_sigma4: 1.0
-      match_sigma8: 1.0
+      match_sigma8: 0.5
       # Cascade levels:
       match_w_2: 0.5
       match_sigma_2: 1.0
@@ -75,8 +83,6 @@ training:
       type: adamw
       betas: [0.9, 0.999]
       weight_decay: 0.01
-      lr_factor: 0.8
-      lr_patience: 5
 
 inference:
   # C isolates the cascade architecture contribution → hard argmax only.

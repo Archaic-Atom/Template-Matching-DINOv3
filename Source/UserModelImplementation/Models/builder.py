@@ -218,11 +218,22 @@ def build_model_from_config(config: dict, framework_args: object) -> ComposedTM:
         # Auto-wire SAR channel widths from sar_encoder if the matching head
         # advertises sar_ch_c2 / sar_ch_c3 in its signature and the user
         # didn't already specify them.
+        # 仅当 head 签名里有 sar_ch_c2 / sar_ch_c3 时才注入，避免 head
+        # （如 StandardMatchingHeadJBU 不吃 SAR encoder 的 C2/C3）误收
+        # 多余参数。
         sar_enc = components['sar_encoder']
         if hasattr(sar_enc, 'channels'):
+            import inspect
+            head_cls = get_component(match_cfg['type'])
+            try:
+                head_sig = inspect.signature(head_cls.__init__).parameters
+            except (TypeError, ValueError):
+                head_sig = {}
             chs = sar_enc.channels
-            match_args.setdefault('sar_ch_c2', chs[0])
-            match_args.setdefault('sar_ch_c3', chs[1])
+            if 'sar_ch_c2' in head_sig:
+                match_args.setdefault('sar_ch_c2', chs[0])
+            if 'sar_ch_c3' in head_sig:
+                match_args.setdefault('sar_ch_c3', chs[1])
 
         components['matching'] = get_component(match_cfg['type'])(**match_args)
 

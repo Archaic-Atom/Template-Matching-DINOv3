@@ -30,10 +30,13 @@ architecture:
       channels: [64, 128, 256]
 
   matching:
-    type: StandardMatchingHead
+    type: StandardMatchingHeadJBU
     args:
+      # 2026-05-27 redesign: FeatUp JBU upsamplers on both modalities,
+      # matching_dim widened 128 → 256. Architecture mirrors A; only the
+      # training rules differ (no Stage-1 SAR init, sar_encoder unfrozen).
       dino_dim: 1024
-      matching_dim: 128
+      matching_dim: 256
       fine_dim: 32
       fine_margin: 4
       sar_size: 64
@@ -50,18 +53,20 @@ training:
       type: sgd
       momentum: 0.9
       weight_decay: 0.0001
-      lr_factor: 0.8
-      lr_patience: 5
 
   stage_2:
     freeze_sar_encoder: false           # ← B: SAR encoder trained jointly with matching head
                                         #     (the ablation: no Stage 1 → joint Stage 2 from scratch)
     loss:
       type: two_stage_matching_loss
+      # 2026-05-27 σ change: align coarse heads to physical σ = 4 px.
+      #   stride-4: σ=1 cell = 4 px (unchanged)
+      #   stride-8: σ=0.5 cell = 4 px (tightened from 1 cell = 8 px)
+      # Fine head keeps σ=1 px for sub-pixel precision.
       match_w4: 1.0
       match_w8: 0.5
       match_sigma4: 1.0
-      match_sigma8: 1.0
+      match_sigma8: 0.5
       match_sigma_fine: 1.0
       match_w_fine: 1.0
       fine_warmup_epochs: 3
@@ -69,8 +74,6 @@ training:
       type: adamw
       betas: [0.9, 0.999]
       weight_decay: 0.01
-      lr_factor: 0.8
-      lr_patience: 5
 
 inference:
   argmax_type: hard

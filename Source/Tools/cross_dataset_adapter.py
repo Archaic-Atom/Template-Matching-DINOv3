@@ -42,6 +42,7 @@ each you get 6400 eval pairs — enough for a reliable MEE/SR@k estimate.
 """
 
 import argparse
+import csv
 import io
 import json
 import os
@@ -89,13 +90,33 @@ class BaseCrossDatasetAdapter:
     TARGET_RES_M: float = 10.0
     SAR_SIZE: int = 64
     RGB_SIZE: int = 128
-    MAX_OFFSET: int = 8        # GT displacement range: uniform in [-8, +8]
+    # GT displacement range: uniform in [-MAX_OFFSET, +MAX_OFFSET]. 32 matches
+    # the SEN1-2 training distribution (gt_xy ∈ [0, 64] inside the 128×128 RGB
+    # patch, i.e. ``center_offset ± max_offset`` = 32 ± 32). Earlier the
+    # class default was 8 — that produced a tight [24, 40] GT range mismatched
+    # with the training distribution and caused Stage-2 cross-eval numbers to
+    # look much worse than they are (predictions span [0, 64] from training
+    # while GTs were squeezed to the center).
+    # GT 偏移范围 [-MAX_OFFSET, +MAX_OFFSET]。32 与 SEN1-2 训练分布一致
+    # （gt ∈ [0, 64]）。早期默认 8 → GT 集中在 [24, 40] 与训练不匹配，
+    # Stage-2 cross-eval 数字偏低。
+    MAX_OFFSET: int = 32
 
     def __init__(self, raw_dir: str, out_dir: str,
-                 samples_per_scene: int = 64, seed: int = 12345) -> None:
+                 samples_per_scene: int = 64, seed: int = 12345,
+                 max_scenes: int = 0, max_offset: int = -1) -> None:
         self.raw_dir = Path(raw_dir)
         self.out_dir = Path(out_dir)
         self.samples_per_scene = samples_per_scene
+        # 0 = use all scenes; >0 = random-subsample to this many.
+        # 0 表示使用全部 scene；>0 时随机抽取 max_scenes 个。
+        self.max_scenes = max_scenes
+        # -1 = use class default; else override (per-run knob without touching
+        # the class). Stored back onto the instance so existing references
+        # via ``self.MAX_OFFSET`` see the override transparently.
+        # -1 表示用类默认值；否则覆盖到实例，避免污染类属性。
+        if max_offset >= 0:
+            self.MAX_OFFSET = max_offset
         self.rng = random.Random(seed)
         self.np_rng = np.random.default_rng(seed)
 
@@ -216,6 +237,12 @@ class BaseCrossDatasetAdapter:
             print(f"[{self.DATASET_NAME}] no scenes found under {self.raw_dir}",
                   file=sys.stderr)
             return
+        # Optional subsample of scenes to bound output size.
+        # 可选：截取 max_scenes 个 scene 控制输出规模。
+        if self.max_scenes and len(scenes) > self.max_scenes:
+            scenes = self.rng.sample(scenes, self.max_scenes)
+            print(f"[{self.DATASET_NAME}] random-subsampled to "
+                  f"{len(scenes)} scenes (seed control)", flush=True)
 
         sar_out_dir = self.out_dir / 'sar'
         rgb_out_dir = self.out_dir / 'rgb'
@@ -257,6 +284,23 @@ class BaseCrossDatasetAdapter:
             'rgb_path': rgb_paths,
             'label': torch.tensor(labels, dtype=torch.long),
         }, self.out_dir / 'manifest.pt')
+
+        # Also write CSV in the same shape as ``Datasets/image_test*.csv``
+        # so eval_stage1_matching / stage1_eval_2k / stage1_separation_2k /
+        # JackFramework test mode can consume it directly without an
+        # intermediate pt → csv conversion step.
+        # 同时写 CSV，列与 Datasets/image_test*.csv 一致（SAR_Image,
+        # RGB_Image, Label），方便 eval 链直接吃。
+        csv_path = self.out_dir / 'cross_eval.csv'
+        with open(csv_path, 'w', newline='') as fh:
+            writer = csv.writer(fh)
+            writer.writerow(['SAR_Image', 'RGB_Image', 'Label'])
+            for sp, rp, (lx, ly) in zip(sar_paths, rgb_paths, labels):
+                # JSON list with the same "[x, y]" formatting used by
+                # image_test_2k.csv; csv module will quote because of comma.
+                # 与 image_test_2k.csv 一致的 "[x, y]" 写法，csv 模块会
+                # 自动加引号以保护逗号。
+                writer.writerow([sp, rp, json.dumps([int(lx), int(ly)])])
 
         # Human-readable meta.
         with open(self.out_dir / 'meta.json', 'w') as fh:
@@ -384,14 +428,18 @@ class QXSSAROPTAdapter(BaseCrossDatasetAdapter):
     TARGET_RES_M = 1.0       # ★ override: no resampling for cross-resolution eval
 
     def list_scenes(self) -> List[Tuple[str, str]]:
-        opt_dir = next((self.raw_dir / d for d in ('opt_256', 'optical', 'opt')
+        # 2026-05-26 zip release names dirs ``opt_256_oc_0.2`` / ``sar_256_oc_0.2``.
+        # 2026-05-26 的 zip 把目录命名为带 _oc_0.2 后缀，加入候选。
+        opt_dir = next((self.raw_dir / d for d in (
+            'opt_256_oc_0.2', 'opt_256', 'optical', 'opt')
                         if (self.raw_dir / d).is_dir()), None)
-        sar_dir = next((self.raw_dir / d for d in ('sar_256', 'sar')
+        sar_dir = next((self.raw_dir / d for d in (
+            'sar_256_oc_0.2', 'sar_256', 'sar')
                         if (self.raw_dir / d).is_dir()), None)
         if opt_dir is None or sar_dir is None:
             raise FileNotFoundError(
-                f"Expected opt_256/ and sar_256/ (or opt/ and sar/) under "
-                f"{self.raw_dir}"
+                f"Expected opt_256_oc_0.2/ / opt_256/ / optical/ / opt/ and "
+                f"sar_256_oc_0.2/ / sar_256/ / sar/ under {self.raw_dir}"
             )
         scenes = []
         for opt_fp in sorted(opt_dir.glob('*')):
@@ -498,12 +546,22 @@ def main() -> None:
     parser.add_argument('--samples_per_scene', type=int, default=64,
                         help='# patches drawn per native scene (default 64; '
                              'for QXS-SAROPT recommend 4)')
+    parser.add_argument('--max_scenes', type=int, default=0,
+                        help='Random-subsample to at most this many scenes '
+                             '(0 = use all; useful for QXS-SAROPT 20 k pairs '
+                             'where you only want a few thousand patches).')
+    parser.add_argument('--max_offset', type=int, default=-1,
+                        help='Override GT displacement range '
+                             '[-max_offset, +max_offset]. -1 = use class '
+                             'default (32 for the SEN1-2-matched setup).')
     parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
 
     cls = ADAPTERS[args.dataset]
     adapter = cls(args.raw_dir, args.out_dir,
-                  samples_per_scene=args.samples_per_scene, seed=args.seed)
+                  samples_per_scene=args.samples_per_scene,
+                  seed=args.seed, max_scenes=args.max_scenes,
+                  max_offset=args.max_offset)
     adapter.build()
 
 

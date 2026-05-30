@@ -41,7 +41,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .registry import register
-from .coarse_matching import ProjMatchSAR, ProjMatchRGB, MatchingHead
+from .coarse_matching import ProjMatchSAR, ProjMatchRGB, ProjMatchJBU, MatchingHead
 
 
 def _gn(num_channels: int, num_groups: int = 32) -> nn.GroupNorm:
@@ -305,6 +305,191 @@ class CascadeHead(nn.Module):
             'heatmap_per_stride':       {4: H_4} if H_8 is None else {4: H_4, 8: H_8},
             'heatmap_cascade':          {2: H_2, 1: H_1},
             # Aliases so ComponentBasedInterface.accuracy works without override:
+            'heatmap_fine':             H_1,
+            'fine_anchor_pix':          anchor_1,
+            'cascade_anchor_2_cells':   anchor_2,
+            'fusion_weights':           (F.softmax(fusion_logits, dim=0)
+                                         if H_8 is not None else None),
+        }
+        return out
+
+
+# ---------------------------------------------------------------------------
+# CascadeHeadJBU — C 变体的 FeatUp 版本
+# ---------------------------------------------------------------------------
+
+@register("CascadeHeadJBU")
+class CascadeHeadJBU(nn.Module):
+    """CascadeHead variant with FeatUp JBU upsamplers at the COARSE stage.
+
+    Same 3-level cascade structure as ``CascadeHead`` (coarse stride-4 +
+    stride-8 fusion → cascade stride-2 → cascade stride-1 with raw-image
+    stem), but the coarse paths use ``ProjMatchJBU`` (FeatUp JBU + raw
+    image guidance) instead of bilinear + 1×1 conv (RGB) / 1×1 conv on
+    ResNet C2/C3 (SAR).
+
+    与 ``CascadeHead`` 的 3 级结构一致，但 coarse stride-4/8 改为
+    ``ProjMatchJBU``——双边都吃 stride-16 1024-d 特征 + 自己的原图作
+    JBU 引导。Cascade 阶段（stride-4 → 2 → 1）的 ``LearnedUpsampler``
+    保留不动：那里的输入已经是投到 matching_dim 的特征（不是 ViT 原
+    raw features），JBU 的 image-guided range kernel 在这种紧凑特征
+    上意义不大；而 stride-1 早已通过 ``RawImageStem`` 引入原图高频
+    残差（功能上接近 image guidance）。
+
+    State_dict layout differs from ``CascadeHead`` in the coarse heads
+    (proj_*_4 / proj_*_8 now contain JBU stacks); cascade-specific
+    modules keep the same names + shapes so loss code and accuracy code
+    don't need changes.
+
+    Args:
+        dino_dim: channel count of stride-16 features (DINOv3 ViT-L/16 →
+            1024; SAR encoder's ``sar16`` after ``ProjHead`` → 1024).
+        matching_dim: shared output channel count of all matching heads.
+            ``256`` recommended (vs A's old 128).
+        sar_size: SAR template pixel size (64 px standard).
+        raw_stem_dim: RawImageStem output channels (16 default).
+        use_stride_8_coarse: enable the stride-8 coarse path; default true
+            for parity with A's multi-scale coarse fusion.
+        cascade_window_2: ± cells at stride-2 around 2 × coarse argmax.
+        cascade_window_1: ± pixels at stride-1 around 2 × stride-2 argmax.
+    """
+
+    def __init__(self,
+                 dino_dim: int = 1024,
+                 matching_dim: int = 256,
+                 sar_size: int = 64,
+                 raw_stem_dim: int = 16,
+                 use_stride_8_coarse: bool = True,
+                 cascade_window_2: int = 4,
+                 cascade_window_1: int = 4) -> None:
+        super().__init__()
+        self.sar_size = int(sar_size)
+        self.use_stride_8_coarse = bool(use_stride_8_coarse)
+        self.cascade_window_2 = int(cascade_window_2)
+        self.cascade_window_1 = int(cascade_window_1)
+
+        # === Coarse stride-4: JBU 2 levels (×4 upsample, stride-16 → 4) ===
+        # 与 StandardMatchingHeadJBU 一致：双边都用 stride-16 1024-d 特征。
+        self.proj_sar_4 = ProjMatchJBU(
+            feat_dim=dino_dim, out_dim=matching_dim, levels=2)
+        self.proj_rgb_4 = ProjMatchJBU(
+            feat_dim=dino_dim, out_dim=matching_dim, levels=2)
+        self.head_4 = MatchingHead(refine=True)
+
+        # === Coarse stride-8: JBU 1 level (×2 upsample, stride-16 → 8) ===
+        if self.use_stride_8_coarse:
+            self.proj_sar_8 = ProjMatchJBU(
+                feat_dim=dino_dim, out_dim=matching_dim, levels=1)
+            self.proj_rgb_8 = ProjMatchJBU(
+                feat_dim=dino_dim, out_dim=matching_dim, levels=1)
+            self.head_8 = MatchingHead(refine=True)
+
+        # === Cascade level 1/2: bilinear+conv on PROJECTED matching feats ===
+        # Inputs here are already in matching_dim (256), not raw ViT features,
+        # so JBU's image-guided range kernel offers limited benefit. Keep
+        # LearnedUpsampler for consistency with CascadeHead.
+        # 这里的输入是已经投到 matching_dim 的特征，不是 ViT 原始特征，
+        # JBU 的 image-guidance 收益不大，保留 LearnedUpsampler。
+        self.sar_upsample_4to2 = LearnedUpsampler(channels=matching_dim, scale=2)
+        self.rgb_upsample_4to2 = LearnedUpsampler(channels=matching_dim, scale=2)
+        self.head_2 = MatchingHead(refine=True)
+
+        # === Cascade level 1/1: bilinear+conv + raw-image stem concat ===
+        # RawImageStem already supplies sharp pixel-level signal directly
+        # from the raw image; that's functionally similar to image guidance.
+        # RawImageStem 已经从原图引入高频残差，相当于在 stride-1 加入
+        # 图像引导信号，所以这里不需要额外的 JBU。
+        self.sar_upsample_2to1 = LearnedUpsampler(channels=matching_dim, scale=2)
+        self.rgb_upsample_2to1 = LearnedUpsampler(channels=matching_dim, scale=2)
+        self.sar_raw_stem = RawImageStem(out_dim=raw_stem_dim)
+        self.rgb_raw_stem = RawImageStem(out_dim=raw_stem_dim)
+        # Concat(upsampled, raw_stem) → matching_dim, L2-normalized.
+        self.proj_sar_1 = ProjMatchSAR(
+            in_ch=matching_dim + raw_stem_dim, out_dim=matching_dim)
+        self.proj_rgb_1 = ProjMatchSAR(
+            in_ch=matching_dim + raw_stem_dim, out_dim=matching_dim)
+        self.head_1 = MatchingHead(refine=True)
+
+    # -----------------------------------------------------------------
+    # Helpers (same as CascadeHead)
+    # -----------------------------------------------------------------
+
+    def _coarse_argmax_cells_stride4(self,
+                                     H_4: torch.Tensor,
+                                     H_8: torch.Tensor | None,
+                                     fusion_logits: torch.Tensor) -> torch.Tensor:
+        """Fused argmax on the coarse heatmaps, in stride-4 cell coords."""
+        if H_8 is None:
+            H_fused = H_4
+        else:
+            alphas = F.softmax(fusion_logits, dim=0)
+            H_8_up = F.interpolate(H_8, size=H_4.shape[-2:],
+                                   mode='bilinear', align_corners=False)
+            H_fused = alphas[0] * H_4 + alphas[1] * H_8_up
+        return _argmax_xy(H_fused)
+
+    # -----------------------------------------------------------------
+    # Forward
+    # -----------------------------------------------------------------
+
+    def forward(self,
+                sar_img: torch.Tensor,
+                rgb_img: torch.Tensor,
+                sar_feat: dict,
+                rgb_feat: list,
+                fusion_logits: torch.Tensor) -> dict:
+        # Both coarse modalities consume their stride-16 1024-d features.
+        # 粗匹配双边都吃 stride-16 1024-d 特征。
+        rgb_16 = rgb_feat[-1]            # (B, 1024, 8, 8)
+        sar_16 = sar_feat['sar16']        # (B, 1024, 4, 4) L2-normed
+
+        # ---- Level 1/4 (JBU 2 levels) ----
+        sar_4 = self.proj_sar_4(sar_16, sar_img)   # (B, D, 16, 16)
+        rgb_4 = self.proj_rgb_4(rgb_16, rgb_img)   # (B, D, 32, 32)
+        H_4 = self.head_4(template=sar_4, search=rgb_4)   # (B, 1, 17, 17)
+
+        # ---- Level 1/8 (JBU 1 level) ----
+        if self.use_stride_8_coarse:
+            sar_8 = self.proj_sar_8(sar_16, sar_img)   # (B, D, 8, 8)
+            rgb_8 = self.proj_rgb_8(rgb_16, rgb_img)   # (B, D, 16, 16)
+            H_8 = self.head_8(template=sar_8, search=rgb_8)   # (B, 1, 9, 9)
+        else:
+            H_8 = None
+
+        # ---- Coarse argmax → stride-4 cell coords (detached) ----
+        with torch.no_grad():
+            uv_4 = self._coarse_argmax_cells_stride4(H_4, H_8, fusion_logits)
+
+        # ---- Level 1/2 (LearnedUpsampler on projected features) ----
+        sar_2_full = F.normalize(self.sar_upsample_4to2(sar_4), p=2, dim=1)
+        rgb_2_full = F.normalize(self.rgb_upsample_4to2(rgb_4), p=2, dim=1)
+        sar_size_s2 = self.sar_size // 2
+        center_s2 = (uv_4 * 2).long()
+        rgb_2_crop, anchor_2 = _windowed_search_crop(
+            rgb_2_full, center_s2, template_size_cells=sar_size_s2,
+            margin_cells=self.cascade_window_2)
+        H_2 = self.head_2(template=sar_2_full, search=rgb_2_crop)
+
+        with torch.no_grad():
+            uv_2_rel = _argmax_xy(H_2)
+            uv_2 = anchor_2 + uv_2_rel
+
+        # ---- Level 1/1 (LearnedUpsampler + RawImageStem concat) ----
+        sar_1_feat = self.sar_upsample_2to1(sar_2_full)
+        rgb_1_feat = self.rgb_upsample_2to1(rgb_2_full)
+        sar_1_raw  = self.sar_raw_stem(sar_img)
+        rgb_1_raw  = self.rgb_raw_stem(rgb_img)
+        sar_1 = self.proj_sar_1(torch.cat([sar_1_feat, sar_1_raw], dim=1))
+        rgb_1 = self.proj_rgb_1(torch.cat([rgb_1_feat, rgb_1_raw], dim=1))
+        center_s1 = (uv_2 * 2).long()
+        rgb_1_crop, anchor_1 = _windowed_search_crop(
+            rgb_1, center_s1, template_size_cells=self.sar_size,
+            margin_cells=self.cascade_window_1)
+        H_1 = self.head_1(template=sar_1, search=rgb_1_crop)
+
+        out: dict = {
+            'heatmap_per_stride':       {4: H_4} if H_8 is None else {4: H_4, 8: H_8},
+            'heatmap_cascade':          {2: H_2, 1: H_1},
             'heatmap_fine':             H_1,
             'fine_anchor_pix':          anchor_1,
             'cascade_anchor_2_cells':   anchor_2,
