@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*
 import JackFramework as jf
 
-# TM_Model_A: legacy path (its own _create_*.py + Loss/*.py + Nets/model.py).
-# A is currently training under nohup — its files are intentionally NOT
-# touched. Phase 2 will refactor A onto the yaml-driven path after Stage 1
-# finishes and we've verified state_dict compatibility.
+# TM_Model_A: baseline, now yaml-driven like the other variants — a thin
+# ComponentBasedInterface subclass that only sets CONFIG_PATH. Its original
+# _create_*.py / Loss/*.py / Nets/model.py were moved to _legacy/legacy_A/.
 from .TM_Model_A import TMModelAInterface
 
 # TM_Model_B/C/D/E: yaml-driven variants, each is a thin ComponentBasedInterface

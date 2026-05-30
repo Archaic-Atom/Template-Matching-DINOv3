@@ -74,7 +74,7 @@ nohup bash -c "JF_PROGRESS_COLUMNS=300 CUDA_VISIBLE_DEVICES=${train_gpus_id} pyt
     --dataloaderType iterable \
     --imgNum 65275274 \
     --valImgNum 8145176 \
-    --maxEpochs 6 \
+    --maxEpochs 10 \
     --sampleNum 1 \
     --lr 1e-3 \
     --dist True \

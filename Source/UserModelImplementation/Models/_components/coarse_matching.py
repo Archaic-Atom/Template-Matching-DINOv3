@@ -57,6 +57,45 @@ class ProjMatchRGB(nn.Module):
         return F.normalize(x, p=2, dim=1)
 
 
+class ProjMatchJBU(nn.Module):
+    """FeatUp-style JBU projection: stride-16 features + raw image guide
+    → upsampled features at out_dim, L2-normalized.
+
+    用 FeatUp JBU 把 stride-16 特征上采 + 原图导引，再 1×1 投影 + L2-norm。
+    替代 ProjMatchRGB 的 bilinear 上采 + 1×1 投影；同样可用于 SAR 侧（对称
+    设计：双边都吃自己的 stride-16 1024-d 特征，用各自的原图 guide）。
+
+    Use cases:
+        RGB stride-4: feat_dim=1024 (DINOv3), out_dim=256, levels=2
+            dino_16 (B, 1024, 8, 8)  + rgb_img (B, 3, 128, 128)
+            → (B, 256, 32, 32)
+        SAR stride-4: feat_dim=1024 (sar16), out_dim=256, levels=2
+            sar_16  (B, 1024, 4, 4)  + sar_img (B, 3, 64, 64)
+            → (B, 256, 16, 16)
+        Stride-8 (either modality): levels=1, halves the upsample.
+    """
+
+    def __init__(self, feat_dim: int = 1024, out_dim: int = 256,
+                 levels: int = 2, guidance_dim: int = 3) -> None:
+        super().__init__()
+        # Lazy import keeps optional FeatUp dependency contained.
+        # 延迟 import 让 FeatUp 这一可选依赖只在用到此类时报错。
+        from .jbu_upsampler import JBUStack
+        self.jbu = JBUStack(feat_dim=feat_dim, out_dim=out_dim,
+                            levels=levels, guidance_dim=guidance_dim)
+
+    def forward(self, source: torch.Tensor,
+                guidance: torch.Tensor) -> torch.Tensor:
+        """Upsample ``source`` guided by ``guidance``, return L2-normalized.
+
+        Args:
+            source: ``(B, feat_dim, h, w)`` low-res feature (stride-16).
+            guidance: ``(B, guidance_dim, H, W)`` raw image.
+        """
+        x = self.jbu(source, guidance)
+        return F.normalize(x, p=2, dim=1)
+
+
 class MatchingHead(nn.Module):
     """Cross-correlation (grouped conv) between L2-normalized template and search,
     optionally followed by a 3x3 conv refinement on the resulting heatmap.

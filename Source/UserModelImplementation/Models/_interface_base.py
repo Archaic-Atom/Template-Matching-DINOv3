@@ -101,15 +101,46 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
         else:
             raise ValueError(f"Unknown optimizer type: {opt_type}")
 
-        sch = optim.lr_scheduler.ReduceLROnPlateau(
-            opt, mode='min',
-            factor=float(opt_cfg.get('lr_factor', 0.8)),
-            patience=int(opt_cfg.get('lr_patience', 5)),
-        )
+        # LR scheduler — config-driven, default to CosineAnnealingLR over
+        # maxEpochs because our typical budget is 6-10 epochs and the previous
+        # ReduceLROnPlateau (patience=5) never triggered.
+        # 学习率策略：默认走 maxEpochs 周期的余弦退火；以前的 ReduceLROnPlateau
+        # 在 6-10 epoch 预算下几乎不会触发。
+        sch_cfg = opt_cfg.get('scheduler', {})
+        sch_type = str(sch_cfg.get('type', 'cosine')).lower()
+        max_epochs = int(getattr(self._args, 'maxEpochs', 10))
+        if sch_type == 'cosine':
+            sch = optim.lr_scheduler.CosineAnnealingLR(
+                opt,
+                T_max=max(1, int(sch_cfg.get('T_max', max_epochs))),
+                eta_min=float(sch_cfg.get('eta_min', 1e-5)),
+            )
+        elif sch_type == 'multistep':
+            ms_default = [int(max_epochs * 0.6), int(max_epochs * 0.85)]
+            sch = optim.lr_scheduler.MultiStepLR(
+                opt,
+                milestones=list(sch_cfg.get('milestones', ms_default)),
+                gamma=float(sch_cfg.get('gamma', 0.5)),
+            )
+        elif sch_type in ('reduce_on_plateau', 'plateau'):
+            sch = optim.lr_scheduler.ReduceLROnPlateau(
+                opt, mode='min',
+                factor=float(sch_cfg.get('lr_factor', 0.8)),
+                patience=int(sch_cfg.get('lr_patience', 5)),
+            )
+        else:
+            raise ValueError(f"Unknown scheduler type: {sch_type}")
         return [opt], [sch]
 
     def lr_scheduler(self, sch: object, ave_loss: list, sch_id: int) -> None:
-        return sch.step(ave_loss)
+        # ReduceLROnPlateau is the only built-in scheduler that takes a loss
+        # value as step() argument; all the others (Cosine / MultiStep / ...)
+        # take no args.
+        # 只有 ReduceLROnPlateau 的 step() 需要 loss 参数；其它 scheduler
+        # 都是无参 step。
+        if isinstance(sch, optim.lr_scheduler.ReduceLROnPlateau):
+            return sch.step(float(ave_loss[sch_id][0]))
+        return sch.step()
 
     # -----------------------------------------------------------------
     # Forward / loss / accuracy — dispatched via config
@@ -117,6 +148,21 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
 
     def inference(self, model: list, input_data: list, model_id: int) -> list:
         output = model(input_data[self.ID_SAR], input_data[self.ID_RGB])
+        # In test mode, attach a decoded primary-head prediction so the
+        # dataloader's ``save_result`` can write a CSV row without needing
+        # the yaml config. Uses the same decoder as ``accuracy()``'s a0.
+        # test 模式下顺手把主 head 解码结果挂到 output 上，dataloader 的
+        # save_result 直接读即可，省去再传 yaml config。
+        if (self._is_stage_2 and
+                getattr(self._args, 'mode', None) == 'test'):
+            from ._components.decode import decode_primary
+            argmax_type = self._config.get(
+                'inference', {}).get('argmax_type', 'hard')
+            with torch.no_grad():
+                pred_xy, score = decode_primary(
+                    output, argmax_type=argmax_type)
+                output['_test_pred_xy'] = pred_xy
+                output['_test_score'] = score
         return [output]
 
     def loss(self, output_data: list, label_data: list, model_id: int) -> list:
@@ -269,9 +315,21 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
     def pretreatment(self, epoch: int, rank: object) -> None:
         self._current_epoch = int(epoch)
 
-    def postprocess(self, epoch: int, rank: object,
-                    ave_tower_loss: list, ave_tower_acc: list) -> None:
-        pass
+    def post_process(self, epoch: int, rank: object,
+                     ave_tower_loss: list, ave_tower_acc: list) -> None:
+        # In ``--mode test`` the framework calls user_post_process(0) once
+        # after the test loop finishes; piggy-back on it to trigger the
+        # dataloader's per-rank merge + final-CSV emission.
+        # test 模式下框架在 loop 结束后调用一次 user_post_process(0)，
+        # 借此触发 dataloader 的 per-rank 合并 + 最终 CSV 输出。
+        if getattr(self._args, 'mode', None) == 'test':
+            try:
+                from UserModelImplementation.Dataloaders.tm_dataloader import (
+                    finalize_active_test,
+                )
+                finalize_active_test()
+            except ImportError:
+                pass
 
     # -----------------------------------------------------------------
     # Checkpoint I/O
@@ -295,14 +353,33 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
         state = dict(checkpoint['model_0'])
 
         if not load_pretrained_sar:
-            sar_keys = [k for k in state if k.startswith('sar_encoder.')]
-            for k in sar_keys:
-                del state[k]
-            jf.log.info(
-                f"[{type(self).__name__}] load_pretrained_sar=False — "
-                f"dropped {len(sar_keys)} sar_encoder.* keys from ckpt; "
-                f"SAR encoder will train from fresh init."
-            )
+            # Only strip the SAR encoder when this is a STAGE-1 checkpoint (it
+            # contains ONLY sar_encoder.* keys): that is B's ablation — start
+            # Stage 2 without inheriting a Stage-1-pretrained SAR encoder. When
+            # RESTORING a STAGE-2 checkpoint (resume / test) the ckpt also holds
+            # the matching head, and its sar_encoder.* are B's OWN trained
+            # weights, which MUST be kept — stripping them here was the bug that
+            # made B's checkpoints evaluate/resume on a random SAR encoder.
+            # 仅当这是 STAGE-1 ckpt（只含 sar_encoder.* key）时才剥离 SAR encoder——
+            # 那是 B 的消融：Stage 2 不继承 Stage-1 预训练的 SAR。恢复 STAGE-2 ckpt
+            # （续训/测试）时 ckpt 含 matching 头，其 sar_encoder.* 是 B 自己训练好的
+            # 权重，必须保留（之前误删导致 B 的 ckpt 在随机 SAR encoder 上评测）。
+            is_stage2_ckpt = any(k.startswith('matching.') for k in state)
+            if is_stage2_ckpt:
+                jf.log.info(
+                    f"[{type(self).__name__}] load_pretrained_sar=False but ckpt "
+                    f"is a Stage-2 checkpoint (has matching head) — keeping its "
+                    f"trained sar_encoder.* (restore/test path)."
+                )
+            else:
+                sar_keys = [k for k in state if k.startswith('sar_encoder.')]
+                for k in sar_keys:
+                    del state[k]
+                jf.log.info(
+                    f"[{type(self).__name__}] load_pretrained_sar=False — dropped "
+                    f"{len(sar_keys)} sar_encoder.* keys from Stage-1 ckpt; SAR "
+                    f"encoder starts from fresh init."
+                )
 
         missing, unexpected = model.trainable_tail.load_state_dict(state, strict=False)
         jf.log.info(

@@ -7,7 +7,7 @@
 # trained Stage-2 ckpt — no separate training run needed.
 #
 # This script bootstraps Checkpoint_E_stage2/ from Checkpoint_C_stage2/
-# and launches with maxEpochs=4. If C is already at epoch 4, JackFramework
+# and launches with maxEpochs=10. If C is already at epoch 9, JackFramework
 # will skip training and run val only (eval with E's soft_subpixel argmax
 # → ablation row E "full method" numbers).
 #
@@ -69,7 +69,7 @@ nohup bash -c "JF_PROGRESS_COLUMNS=300 CUDA_VISIBLE_DEVICES=${train_gpus_id} pyt
     --dataloaderType iterable \
     --imgNum 65275274 \
     --valImgNum 8145176 \
-    --maxEpochs 6 \
+    --maxEpochs 10 \
     --sampleNum 1 \
     --lr 1e-3 \
     --dist True \

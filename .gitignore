@@ -14,6 +14,7 @@ Checkpoint_*/
 log_*/
 result_*/
 ResultImg_*/
+DebugResult/
 
 # Log files at repo root
 *.log
