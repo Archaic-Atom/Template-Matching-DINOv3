@@ -119,11 +119,13 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
                 distributed=bool(getattr(args, 'dist', False)),
                 shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)),
                 batch_size=int(getattr(args, 'batchSize', 1)),
-                num_workers=int(getattr(args, 'dataloaderNum', 1)))
+                num_workers=int(getattr(args, 'dataloaderNum', 1)),
+                template_size=int(getattr(args, 'sar_size', 64)))
         else:
             self.__train_dataset = TM_Dataset(
                 args.trainListPath, is_training, args.pre_trained,
-                is_stage_2=bool(getattr(args, 'is_stage_2', False)))
+                is_stage_2=bool(getattr(args, 'is_stage_2', False)),
+                template_size=int(getattr(args, 'sar_size', 64)))
 
         if not is_training:
             # ``--mode test`` reuses get_train_dataset for the test set.
@@ -142,11 +144,13 @@ class TMDataloader(jf.UserTemplate.DataHandlerTemplate):
                 distributed=bool(getattr(args, 'dist', False)),
                 shuffle_buffer=int(getattr(args, 'shuffle_buffer', 100000)),
                 batch_size=int(getattr(args, 'batchSize', 1)),
-                num_workers=int(getattr(args, 'dataloaderNum', 1)))
+                num_workers=int(getattr(args, 'dataloaderNum', 1)),
+                template_size=int(getattr(args, 'sar_size', 64)))
         else:
             self.__val_dataset = TM_Dataset(
                 args.valListPath, False, args.pre_trained,
-                is_stage_2=bool(getattr(args, 'is_stage_2', False)))
+                is_stage_2=bool(getattr(args, 'is_stage_2', False)),
+                template_size=int(getattr(args, 'sar_size', 64)))
         return self.__val_dataset
 
     def __use_webdataset(self) -> bool:

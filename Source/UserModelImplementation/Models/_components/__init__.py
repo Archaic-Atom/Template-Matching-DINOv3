@@ -15,7 +15,8 @@ from . import coarse_matching          # noqa: F401  registers CoarseMatchingHea
 from . import fine_head_simple         # noqa: F401  registers FineFeatureHead
 from . import fine_head_cascade        # noqa: F401  registers CascadeHead, CascadeHeadJBU
 from . import sub_pixel                # noqa: F401  registers SubPixelDecoder
-from . import alignment_loss           # noqa: F401  registers alignment_loss
+from . import alignment_loss           # noqa: F401  registers alignment_loss, alignment_ip_loss
+from . import alignment_ip_head        # noqa: F401  registers AlignmentIPHead
 from . import matching_loss            # noqa: F401  registers two_stage_matching_loss
 from . import cascade_loss             # noqa: F401  registers cascade_loss
 

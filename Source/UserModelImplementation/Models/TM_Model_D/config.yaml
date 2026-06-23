@@ -38,8 +38,8 @@ architecture:
       dino_dim: 1024
       matching_dim: 256
       fine_dim: 32
-      fine_margin: 4
-      sar_size: 64
+      fine_margin: 24               # 2026-06-16: match A's 256/192 head (was 4). D reuses A's ckpt → args must equal A for byte-identical state_dict.
+      sar_size: 192                 # 2026-06-16: 256/192 geometry to match A (was 64). Builder reads sar_size from YAML, NOT --sar_size CLI.
 
 training:
   stage_1:

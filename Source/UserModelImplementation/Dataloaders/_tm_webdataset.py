@@ -95,19 +95,29 @@ class TMSampleProcessor:
     """
 
     def __init__(self, is_train: bool, is_pre_train: bool, is_stage_2: bool,
-                 h: int = 64, w: int = 64) -> None:
+                 h: int = 64, w: int = 64, template_size: int = 64) -> None:
+        # ``h/w`` size the displacement heatmap grid (Stage-1 label) and stay at
+        # the displacement range (= ref - template = 64 for BOTH 128/64 and
+        # 256/192). ``template_size`` sizes the SAR template / RGB crop and the
+        # label-sanitize clip — this is what grows 64 -> 192 at the new geometry.
+        # At 128/64 the two coincide (64); at 256/192 they decouple (crop=192,
+        # grid=64). Threaded from ``args.sar_size`` by the dataloader.
+        # ``h/w`` 是位移热图网格(Stage-1 标签),保持位移范围(ref-template=64,
+        # 两种几何都是 64);``template_size`` 是 SAR 模板/RGB 裁剪与 label clip
+        # 范围,新几何下 64->192。128/64 两者都=64;256/192 解耦(裁剪 192、网格 64)。
         self.is_train = is_train
         self.is_pre_train = is_pre_train
         self.is_stage_2 = is_stage_2
         self.h = h
         self.w = w
+        self.template = template_size
         self._heatmap_cache = _build_heatmap_cache(h, w)
 
     def _sanitize_label(self, label: Tensor, image_hw):
         x = int(label[0])
         y = int(label[1])
-        max_x = max(0, image_hw[1] - self.w)
-        max_y = max(0, image_hw[0] - self.h)
+        max_x = max(0, image_hw[1] - self.template)
+        max_y = max(0, image_hw[0] - self.template)
         return (min(max(x, 0), max_x), min(max(y, 0), max_y))
 
     def _label_to_heatmap(self, x: int, y: int) -> Tensor:
@@ -131,12 +141,13 @@ class TMSampleProcessor:
         # 影响匹配头收敛。
         if self.is_train and not self.is_stage_2:
             sar_img, rgb_img, label = TrainAug(
-                sar_img, rgb_img, label, rgb_img.shape[-2:], (self.h, self.w))
+                sar_img, rgb_img, label, rgb_img.shape[-2:],
+                (self.template, self.template))
 
         x, y = self._sanitize_label(label, rgb_img.shape[-2:])
 
         if self.is_pre_train and not self.is_stage_2:
-            rgb_img = rgb_img[:, y:y + self.h, x:x + self.w]
+            rgb_img = rgb_img[:, y:y + self.template, x:x + self.template]
 
         sar_img = _preprocess_image(sar_img, duplicate_channels=True)
         rgb_img = _preprocess_image(rgb_img, duplicate_channels=False)
@@ -240,7 +251,8 @@ def build_tm_webdataset(shard_pattern: str, is_train: bool, is_pre_train: bool,
                         shuffle_buffer: int = 100000,
                         distributed: bool = False,
                         batch_size: int = 1,
-                        num_workers: int = 1) -> object:
+                        num_workers: int = 1,
+                        template_size: int = 64) -> object:
     """Build the WebDataset pipeline ready to hand to ``DataLoader``.
 
     ``shard_pattern`` accepts two forms:
@@ -297,7 +309,7 @@ def build_tm_webdataset(shard_pattern: str, is_train: bool, is_pre_train: bool,
 
     processor = TMSampleProcessor(
         is_train=is_train, is_pre_train=is_pre_train,
-        is_stage_2=is_stage_2)
+        is_stage_2=is_stage_2, template_size=template_size)
 
     # Per-worker sample cap = floor(real_total / (bs * ws)) * bs // nw.
     # ``real_total`` came from the CSV manifest (preferred) or two-shard

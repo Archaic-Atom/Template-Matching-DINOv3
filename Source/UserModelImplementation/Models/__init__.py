@@ -15,6 +15,10 @@ from .TM_Model_C import TMModelCInterface
 from .TM_Model_D import TMModelDInterface
 from .TM_Model_E import TMModelEInterface
 
+# TM_Model_F: learned-IP Stage-1 (W_s/W_d + VICReg rank floor) + frozen-SAR
+# Stage-2 — the F0 "strong Stage-1, protected" counterfactual (2026-06-11).
+from .TM_Model_F import TMModelFInterface
+
 
 def _get_model_dict() -> dict:
     return {
@@ -23,6 +27,7 @@ def _get_model_dict() -> dict:
         'TM_Model_C': TMModelCInterface,
         'TM_Model_D': TMModelDInterface,
         'TM_Model_E': TMModelEInterface,
+        'TM_Model_F': TMModelFInterface,
     }
 
 

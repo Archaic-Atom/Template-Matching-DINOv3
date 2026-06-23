@@ -120,6 +120,12 @@ class ComposedTM(nn.Module):
         if self.is_stage_2:
             self.matching = components['matching']
             self.fusion_logits = nn.Parameter(torch.zeros(2))
+            # Stage-2 never builds the alignment projectors: the matcher eats
+            # the trunk's C2/C3, and a parameter-bearing-but-unused module
+            # would trip DDP's unused-parameter check.
+            # Stage-2 不构建对齐投影头:匹配头只吃 trunk 的 C2/C3,挂一个有参数
+            # 却不前向的模块还会踩 DDP unused-parameter。
+            self.align_ip = None
 
             # Mirror TM_Model_A's trainable_tail layout for ckpt compatibility.
             self.trainable_tail = nn.ModuleDict({
@@ -128,7 +134,18 @@ class ComposedTM(nn.Module):
                 'fusion': nn.ParameterDict({'logits': self.fusion_logits}),
             })
         else:
-            self.trainable_tail = nn.ModuleDict({'sar_encoder': self.sar_encoder})
+            # Optional learned-IP projectors (W_s/W_d); inside trainable_tail
+            # so they checkpoint/resume. At Stage-2 load their keys surface as
+            # unexpected and are dropped by strict=False — projector discarded,
+            # trunk transfers.
+            # 可选的可学内积投影头(W_s/W_d);挂进 trainable_tail 才会存档/续训。
+            # Stage-2 加载时这些 key 是 unexpected,被 strict=False 丢弃 ——
+            # projector 用后即弃,迁移的是 trunk。
+            self.align_ip = components.get('align_ip')
+            tail = {'sar_encoder': self.sar_encoder}
+            if self.align_ip is not None:
+                tail['align_ip'] = self.align_ip
+            self.trainable_tail = nn.ModuleDict(tail)
 
     def forward(self, sar_img: torch.Tensor, rgb_img: torch.Tensor) -> dict:
         if not self.is_stage_2:
@@ -142,7 +159,15 @@ class ComposedTM(nn.Module):
         # control via interface freeze settings rather than no_grad here.
         rgb_feat = self.rgb_encoder(rgb_img)
         sar_feat = self.sar_encoder(sar_img)
-        return {'sar_feat': sar_feat, 'rbg_feat': rgb_feat}
+        out = {'sar_feat': sar_feat, 'rbg_feat': rgb_feat}
+        if self.align_ip is not None:
+            # Learned-IP variant: project both sides; loss/accuracy switch to
+            # this pair when the keys are present.
+            # 可学内积变体:两侧各自投影;loss/accuracy 检测到这两个 key 即改用。
+            s_pre, d_pre = self.align_ip(sar_feat['sar16'], rgb_feat[3])
+            out['align_s_pre'] = s_pre
+            out['align_d_pre'] = d_pre
+        return out
 
     # -- Stage 2: matching --------------------------------------------------
 
@@ -204,6 +229,13 @@ def build_model_from_config(config: dict, framework_args: object) -> ComposedTM:
     components['sar_encoder'] = get_component(sar_cfg['type'])(
         **_resolve_args(sar_cfg.get('args'), framework_args)
     )
+
+    # --- learned-IP alignment head (stage 1 only, optional) ---
+    if not is_stage_2 and 'alignment_ip' in arch:
+        ip_cfg = arch['alignment_ip']
+        components['align_ip'] = get_component(ip_cfg['type'])(
+            **_resolve_args(ip_cfg.get('args'), framework_args)
+        )
 
     # --- matching (stage 2 only) ---
     if is_stage_2:

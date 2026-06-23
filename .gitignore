@@ -36,6 +36,10 @@ Weights/*.pt
 bench_E*_*.tsv
 bench_E*_sweep_results.tsv
 
+# Archived experiment outputs (CSVs / bootstrap logs — research artifacts, not code)
+# 归档实验结果（CSV / bootstrap 日志，属研究产物而非代码）
+results_archive/
+
 
 # IDE workspace files
 *.sublime-workspace

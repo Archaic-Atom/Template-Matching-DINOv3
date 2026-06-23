@@ -189,12 +189,30 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
             )
             return [total, *components.values()]
 
-        # Stage 1
-        total, components = loss_fn(
-            output['sar_feat']['sar16'],
-            output['rbg_feat'][3],
-            **{k: v for k, v in loss_cfg.items() if k != 'type'},
-        )
+        # Stage 1. Learned-IP variants surface projected features under
+        # align_s_pre/align_d_pre — the loss then operates on that pair.
+        # Stage 1:可学内积变体把投影特征挂在 align_s_pre/align_d_pre 下,
+        # 检测到即用投影对,否则走旧的 sar16/DINO 原始对。
+        loss_kwargs = {k: v for k, v in loss_cfg.items() if k != 'type'}
+        # Guard the silent-dispatch trap: the arch block and the loss type
+        # must be paired, else a stale yaml trains the wrong objective quietly.
+        # 防静默分发陷阱:alignment_ip 架构块与 loss type 必须配对出现。
+        is_ip_output = 'align_s_pre' in output
+        is_ip_loss = loss_cfg['type'] == 'alignment_ip_loss'
+        if is_ip_output != is_ip_loss:
+            raise RuntimeError(
+                f"Stage-1 config mismatch: architecture.alignment_ip is "
+                f"{'present' if is_ip_output else 'absent'} but "
+                f"stage_1.loss.type={loss_cfg['type']!r}. The alignment_ip "
+                f"block must be paired with type: alignment_ip_loss."
+            )
+        if is_ip_output:
+            total, components = loss_fn(
+                output['align_s_pre'], output['align_d_pre'], **loss_kwargs)
+        else:
+            total, components = loss_fn(
+                output['sar_feat']['sar16'], output['rbg_feat'][3],
+                **loss_kwargs)
         return [total, *components.values()]
 
     def accuracy(self, output_data: list, label_data: list, model_id: int) -> list:
@@ -222,6 +240,24 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
             from ._components.alignment_loss import alignment_cos_accuracy
             output = output_data[self.ID_PRED]
             with torch.no_grad():
+                if 'align_s_pre' in output:
+                    # Learned-IP variant:
+                    #   a0 = cosine in the learned projected space;
+                    #   a1 = cosine in the RAW trunk space (sar16 vs DINO) —
+                    #        the trunk is the ONLY thing that transfers to
+                    #        Stage-2 (projectors are discarded), so a healthy
+                    #        a0 with a flat a1 means the heads absorbed the
+                    #        alignment and the run is wasted. Comparable to
+                    #        the weak baseline's raw-cosine trajectory.
+                    # 可学内积变体:a0=投影空间余弦;a1=trunk 原始空间余弦 ——
+                    # 迁移到 Stage-2 的只有 trunk,a0 高而 a1 平 = 对齐被投影头
+                    # 吸走,这一炉就白训了。a1 可与弱基线的轨迹直接对比。
+                    return [
+                        alignment_cos_accuracy(
+                            output['align_s_pre'], output['align_d_pre']),
+                        alignment_cos_accuracy(
+                            output['sar_feat']['sar16'], output['rbg_feat'][3]),
+                    ]
                 return [alignment_cos_accuracy(
                     output['sar_feat']['sar16'],
                     output['rbg_feat'][3],
