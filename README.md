@@ -14,6 +14,17 @@ The whole model family is YAML-driven and trained with
 [JackFramework](https://github.com/Archaic-Atom/JackFramework), which owns the
 training loop, DDP launcher, logging and checkpoint I/O.
 
+<p align="center"><img src="assets/pipeline.png" width="100%" alt="DOSR-Net pipeline"></p>
+
+> **Paper (IEEE TGRS 2026):** *Rethinking SAR–Optical Pre-Alignment with
+> Foundation Models for Template Matching.* The central finding is that a usable
+> cross-modal similarity does **not pre-exist** in the encoders — it is
+> *constructed* inside a task-specific matching projection and is
+> high-dimensional (needs ≳64 directions), whereas contrastive pre-alignment
+> supplies only a low-rank (≈22) code that fine-tuning **overwrites**. So a
+> direct-trained cascade, with no pre-alignment stage, reaches state of the art.
+> See [Results](#results).
+
 The repository is organized as an **analysis-led ablation family (`TM_Model_A..F`)**.
 The headline/proposed model is **`TM_Model_C`** — a direct-trained cascade matching
 head. One of the paper's findings is that contrastive Stage-1 *pre-alignment* of the
@@ -79,6 +90,8 @@ Template-Matching-DINOv3/
 │   └── legacy_128_64/              # superseded 128/64-geometry launchers
 ├── Datasets/                       # only a stale example is tracked; real manifests live on servers
 ├── Weights/                        # DINOv3 checkpoint (gitignored, download separately)
+├── assets/                         # README figures (pipeline, qualitative, ...)
+├── MODELS.md                       # pretrained-model manifest (download + placement)
 ├── README.md / README_zh.md
 └── LICENSE
 ```
@@ -127,6 +140,102 @@ The paired comparisons the table supports: **A vs B** isolates Stage-1-as-init;
 sub-pixel decode; **F** isolates a protected, strong-Stage-1 objective. A 2×2
 "frozen-arms" causal study (init × freeze) is documented in
 [`CODE_STRUCTURE.md §7`](CODE_STRUCTURE.md).
+
+---
+
+## Results
+
+All numbers follow **ME-SSM's evaluation protocol** on SEN1-2 (optical reference
+256×256, SAR template 192×192): per-template **CMR@k px** (correct-match rate — one
+`(x, y)` per template, dense zero-reject).
+
+### In-domain SOTA (SEN1-2, full test set)
+
+The proposed direct-trained cascade (`TM_Model_C`) beats prior work at **both**
+thresholds. Full test set = all 7,740 pairs × 289 offsets (≈2.24M positions).
+
+| Method | Venue | CMR(1) ↑ | CMR(3) ↑ | CMR(5) ↑ |
+|---|---|---|---|---|
+| ME-SSM (protocol source) | TGRS 2026 | 62.14 | 89.19 | 93.04 |
+| VU-Net | ICSIDP 2024 | 63.0 | 87.0 | 90.0 |
+| RMSO-ConvNeXt | — | — | 94.36 | — |
+| **Ours (cascade C, direct-trained)** | — | **93.30** | **95.83** | **96.30** |
+
+Mean error 1.13 px, median 0 px. `Checkpoint_C_phase2_8gpu/model_epoch_2.pth`.
+
+### Pre-alignment is redundant under fine-tuning (2×2 causal test, 20k)
+
+Stage-1 contrastive pre-alignment helps **only when the encoder is frozen**; once the
+encoder is fine-tuned, aligned init (S1/Tr) ≈ random init (R/Tr).
+
+| Arm | Init | Stage-2 encoder | CMR(1) | CMR(3) | checkpoint |
+|---|---|---|---|---|---|
+| S1/Tr | Stage-1 aligned | trainable | 68.30 | 86.08 | `Checkpoint_A_ft_256/model_epoch_4.pth` |
+| R/Tr  | random | trainable | 68.28 | 86.35 | `Checkpoint_B_256/model_epoch_4.pth` |
+| S1/Fr | Stage-1 aligned | **frozen** | 68.63 | 86.30 | `Checkpoint_F_s2_frozen_256/model_epoch_4.pth` |
+| R/Fr  | random | **frozen** | 66.94 | 85.17 | `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth` |
+
+### Why (mechanism, Sec. IV)
+
+- **Similarity is constructed, not pre-existing.** Raw DINOv3×SAR features localize no
+  better than chance; matching similarity is built inside the projection and is
+  **high-dimensional** — restricting the matcher to the top 22 shared directions drops
+  the GT-hit rate from 0.897 to 0.565 (needs ≳64 directions at stride-4).
+- **Pre-alignment supplies only a low-rank code.** Contrastive alignment saturates at
+  effective rank ≈22 (four independent confirmations; stronger regularization cannot
+  raise it).
+- **Fine-tuning overwrites it.** End-to-end training drives the aligned encoder's
+  effective rank ≈23 → ≈12 (a from-scratch matcher's regime), so the aligned code is
+  overwritten rather than built upon.
+
+Reproduce every mechanism number with the probes in
+[`Source/Tools/probes/`](Source/Tools/probes/) (default specimen
+`Checkpoint_B_256/model_epoch_4.pth`).
+
+### Cross-dataset zero-shot (cascade, no retraining)
+
+The specialized cascade transfers strongly on its confident half but degrades on the
+coarse tail; OOD robustness *decreases* with training specialization (see
+[`CODE_STRUCTURE.md`](CODE_STRUCTURE.md) and the paper's Discussion).
+
+| Dataset | shift | CMR(3) | high-conf CMR(3) | gross-fail % |
+|---|---|---|---|---|
+| WHU-OPT-SAR | cross-sensor (10 m) | 74.39 | 96.12 | 4.64 |
+| QXS-SAROPT | cross-resolution (1 m) | 10.40 | — | 31.35 |
+
+<p align="center"><img src="assets/specialization.png" width="55%" alt="Specialization scissors: in-domain rises, OOD falls"></p>
+
+### Qualitative (SEN1-2 in-domain)
+
+SAR template (grey) pasted at the **predicted** location; green box = ground truth.
+
+<p align="center"><img src="assets/qualitative_sen12.png" width="90%" alt="Qualitative SEN1-2 matches"></p>
+
+---
+
+## Pretrained models
+
+The full **key-set** of checkpoints (proposed cascade + the six ablation / Stage-1
+models backing Tables I–VII) is released as two archives. See
+[`MODELS.md`](MODELS.md) for the per-model manifest (role, paper claim, placement).
+
+| archive | size | sha256 (first 16) | contents |
+|---|---|---|---|
+| `PaperModels_TGRS2026_m5.zip` | 272 MB | `be9d348822477b8f` | proposed cascade `TM_Model_C` (headline) |
+| `PaperModels_TGRS2026_m2.zip` | 698 MB | `5df5a6712a3311f5` | A-ft, B, S1F, RF, Stage-1 A, Stage-1 F |
+
+**Placement:** unzip **into the project root** so the `Checkpoint_*/` directories sit
+next to `Source/`. The launchers and configs already reference these exact names, e.g.:
+
+```bash
+bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
+```
+
+The **DINOv3 ViT-L/16 satellite backbone** (`dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`,
+1.2 GB) is the **public** Meta weights — not trained by us and not in the archives above;
+download it separately into `Weights/` (see [Installation](#installation) step 5).
+
+> Download links (network drive) — **TODO: add the shared URLs after upload.**
 
 ---
 
@@ -406,8 +515,10 @@ threshold — one `(x, y)` per template). For paired model comparisons,
 ## Analysis & probe tooling
 
 `Source/Tools/` holds the analysis and metric scripts; `Source/Tools/probes/` holds the
-seven mechanism probes that produce the paper's analysis-section numbers (default
-specimen `Checkpoint_B_256/model_epoch_4.pth`):
+mechanism probes that produce the paper's analysis-section numbers (default specimen
+`Checkpoint_B_256/model_epoch_4.pth`). They fall in three groups — see
+[`Source/Tools/probes/README.md`](Source/Tools/probes/README.md) for the full table.
+The core *constructed-similarity* set:
 
 - `probe_b_similarity.py` — **where** B's learned cross-modal similarity lives (raw
   stride-16 cosine vs the projected stride-4 matching subspace; sign check).
@@ -424,11 +535,21 @@ specimen `Checkpoint_B_256/model_epoch_4.pth`):
 - `probe_f0_mechanism.py` — does Stage-2 fine-tuning **erase** Stage-1's alignment?
   (the "F0" mechanism: S1 vs A-ft vs B encoder alignment + cross-encoder CKA).
 
+Plus two more groups (folded in from the analysis round): the
+**granularity–dimensionality** recovery sweeps (`probe_b_granularity_dim.py`,
+`probe_c_granularity_dim.py`, `probe_b_matchdim{,_ood}.py`,
+`probe_b_conditional_dims.py`, `probe_recovery_by_stride.py`,
+`probe_alignment_recovery.py` — matching needs ≳64 distributed dims) and the
+**effective-rank / overwrite** probes (`probe_erank_extractors.py`,
+`probe_erank_cascade.py`, `probe_erank_granularity.py` — aligned 23 → fine-tuned 12).
+
 Supporting tools: `oracle_geom_ceiling.py` (theoretical matching ceiling),
 `stage1_separation_2k.py` / `analyze_stage1_separation.py` (Stage-1 separability, d′),
 `coarse_eval_ab.py` (does Stage-1 help the coarse level), `ckpt_inspect.py` (dim128 vs
 dim256 / JBU presence), `compare_dataset_stats.py` (domain-gap statistics),
-`parse_erank_logs.py` / `plot_frozen_arms.py` (paper-figure data prep).
+`parse_erank_logs.py` / `plot_frozen_arms.py` (paper-figure data prep),
+`stage_ablation.py` (cascade-stage ablation), `ci_reject.py` (risk–coverage /
+rejection curve), `profile_cascade.py` (runtime / efficiency profiling).
 
 ---
 
@@ -437,12 +558,14 @@ dim256 / JBU presence), `compare_dataset_stats.py` (domain-gap statistics),
 If you use this code, please cite the paper (TGRS 2026):
 
 ```bibtex
-@article{TODO_dosrnet_tgrs2026,
-  title   = {TODO: paper title},
-  author  = {TODO: authors},
+@article{rao2026rethinking,
+  title   = {Rethinking {SAR}--Optical Pre-Alignment with Foundation Models
+             for Template Matching},
+  author  = {Rao, Zhibo and He, Mingyi and Li, Xing and Dai, Yuchao and
+             Zhang, Congxuan and Shen, Zhelun and Ding, Biyun},
   journal = {IEEE Transactions on Geoscience and Remote Sensing},
   year    = {2026},
-  note    = {TODO: volume/number/pages/DOI}
+  note    = {To appear}
 }
 ```
 

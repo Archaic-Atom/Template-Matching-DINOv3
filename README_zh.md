@@ -12,6 +12,14 @@
 [JackFramework](https://github.com/Archaic-Atom/JackFramework)（负责训练循环、DDP
 启动、日志与 checkpoint 读写）。
 
+<p align="center"><img src="assets/pipeline.png" width="100%" alt="DOSR-Net pipeline"></p>
+
+> **论文（IEEE TGRS 2026）：** *Rethinking SAR–Optical Pre-Alignment with
+> Foundation Models for Template Matching.* 核心发现：可用的跨模态相似性并**不预先存在**
+> 于编码器中——它是在任务专属的匹配投影里**被构造**出来的，且是高维的（需要 ≳64 个方向）；
+> 而对比式预对齐只能提供一个低秩（≈22）的编码，会被端到端微调**覆盖**。因此一个不带预对齐
+> 阶段、直接训练的级联即可达到 SOTA。见 [实验结果](#实验结果)。
+
 仓库以**分析驱动的消融模型族 `TM_Model_A..F`** 组织，主方法（提出的模型）是
 **`TM_Model_C`**——一个直接训练的级联匹配头。论文的一个结论是：对 SAR 编码器做
 对比式 Stage-1 *预对齐*，相比直接训练**并不会**提升域内匹配效果；多个变体的存在
@@ -73,6 +81,8 @@ Template-Matching-DINOv3/
 │   └── legacy_128_64/              # 已弃用的 128/64 几何脚本
 ├── Datasets/                       # 仅一个过时示例被跟踪；真实清单在服务器上
 ├── Weights/                        # DINOv3 权重（已 gitignore，需单独下载）
+├── assets/                         # README 配图（pipeline、定性结果等）
+├── MODELS.md                       # 预训练模型清单（下载 + 放置）
 ├── README.md / README_zh.md
 └── LICENSE
 ```
@@ -114,6 +124,95 @@ stride-4 + stride-8 JBU 粗匹配**、以及 **256/192 几何**（`matching_dim 
 成对对比：**A vs B** 隔离 Stage-1 作为初始化；**C vs B** 隔离级联 vs 标准细化头；
 **A vs D**、**C vs E** 隔离亚像素解码；**F** 隔离一个受保护的强 Stage-1 目标。2×2 的
 “frozen-arms”因果实验（初始化 × 冻结）见 [`CODE_STRUCTURE.md §7`](CODE_STRUCTURE.md)。
+
+---
+
+## 实验结果
+
+所有数字均遵循 **ME-SSM 评测协议**（SEN1-2，光学参考 256×256、SAR 模板 192×192）：
+逐模板 **CMR@k px**（像素阈值下的正确匹配率——每个模板一个 `(x, y)`，稠密零拒绝）。
+
+### 域内 SOTA（SEN1-2 全测试集）
+
+提出的直接训练级联（`TM_Model_C`）在**两个**阈值上都超越已有方法。全测试集 = 全部
+7,740 对 × 289 偏移（≈224 万位置）。
+
+| 方法 | 出处 | CMR(1) ↑ | CMR(3) ↑ | CMR(5) ↑ |
+|---|---|---|---|---|
+| ME-SSM（协议来源） | TGRS 2026 | 62.14 | 89.19 | 93.04 |
+| VU-Net | ICSIDP 2024 | 63.0 | 87.0 | 90.0 |
+| RMSO-ConvNeXt | — | — | 94.36 | — |
+| **本文（级联 C，直接训练）** | — | **93.30** | **95.83** | **96.30** |
+
+平均误差 1.13 px，中位数 0 px。`Checkpoint_C_phase2_8gpu/model_epoch_2.pth`。
+
+### 微调下预对齐是冗余的（2×2 因果实验，20k）
+
+Stage-1 对比式预对齐**仅在编码器冻结时**有益；一旦编码器参与微调，对齐初始化（S1/Tr）
+≈ 随机初始化（R/Tr）。
+
+| 臂 | 初始化 | Stage-2 编码器 | CMR(1) | CMR(3) | 权重 |
+|---|---|---|---|---|---|
+| S1/Tr | Stage-1 对齐 | 可训 | 68.30 | 86.08 | `Checkpoint_A_ft_256/model_epoch_4.pth` |
+| R/Tr  | 随机 | 可训 | 68.28 | 86.35 | `Checkpoint_B_256/model_epoch_4.pth` |
+| S1/Fr | Stage-1 对齐 | **冻结** | 68.63 | 86.30 | `Checkpoint_F_s2_frozen_256/model_epoch_4.pth` |
+| R/Fr  | 随机 | **冻结** | 66.94 | 85.17 | `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth` |
+
+### 机理（为什么，见论文第 IV 节）
+
+- **相似性是被构造的，而非预先存在。** DINOv3×SAR 的原始特征定位不比随机好；匹配相似性
+  是在投影中构造出来的，且**高维**——把匹配器限制到前 22 个共享方向，GT 命中率从 0.897
+  掉到 0.565（stride-4 下需要 ≳64 个方向）。
+- **预对齐只提供低秩编码。** 对比式对齐在有效秩 ≈22 处饱和（四项独立证据；加强正则也
+  抬不上去）。
+- **微调会覆盖它。** 端到端训练把对齐编码器的有效秩从 ≈23 压到 ≈12（即从零训练匹配器的
+  水平），对齐编码是被覆盖而非被继承。
+
+用 [`Source/Tools/probes/`](Source/Tools/probes/) 中的探针可复现全部机理数字
+（默认被试 `Checkpoint_B_256/model_epoch_4.pth`）。
+
+### 跨数据集零样本（级联，无需重训）
+
+专门化的级联在其高置信半区迁移很强、但在粗尾部退化；OOD 鲁棒性随训练专门化程度*下降*
+（见 [`CODE_STRUCTURE.md`](CODE_STRUCTURE.md) 与论文 Discussion）。
+
+| 数据集 | 迁移类型 | CMR(3) | 高置信 CMR(3) | 大误差失败 % |
+|---|---|---|---|---|
+| WHU-OPT-SAR | 跨传感器（10 m） | 74.39 | 96.12 | 4.64 |
+| QXS-SAROPT | 跨分辨率（1 m） | 10.40 | — | 31.35 |
+
+<p align="center"><img src="assets/specialization.png" width="55%" alt="专门化剪刀图：域内上升、OOD 下降"></p>
+
+### 定性结果（SEN1-2 域内）
+
+SAR 模板（灰）贴在**预测**位置；绿框 = 真值。
+
+<p align="center"><img src="assets/qualitative_sen12.png" width="90%" alt="SEN1-2 定性匹配"></p>
+
+---
+
+## 预训练模型
+
+完整的**关键集** checkpoint（提出的级联 + 支撑表 I–VII 的六个消融/Stage-1 模型）以两个压缩包
+发布。每个模型的用途/支撑结论/放置位置见 [`MODELS.md`](MODELS.md)。
+
+| 压缩包 | 大小 | sha256（前 16 位） | 内容 |
+|---|---|---|---|
+| `PaperModels_TGRS2026_m5.zip` | 272 MB | `be9d348822477b8f` | 提出的级联 `TM_Model_C`（headline） |
+| `PaperModels_TGRS2026_m2.zip` | 698 MB | `5df5a6712a3311f5` | A-ft、B、S1F、RF、Stage-1 A、Stage-1 F |
+
+**放置：**解压**到项目根目录**，使 `Checkpoint_*/` 各目录与 `Source/` 同级。启动脚本与配置
+已按这些确切目录名引用，例如：
+
+```bash
+bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
+```
+
+**DINOv3 ViT-L/16 卫星骨干**（`dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`，1.2 GB）是
+**公开的** Meta 权重——非本文训练、不在上述压缩包内；请单独下载到 `Weights/`
+（见[安装](#安装)第 5 步）。
+
+> 下载链接（网盘）——**TODO：上传后补充分享地址。**
 
 ---
 
@@ -369,7 +468,8 @@ python Source/Tools/eval_test_csv.py --csv <merged_test.csv>   # L2 统计 + PCK
 ## 分析与探针工具
 
 `Source/Tools/` 存放分析与指标脚本；`Source/Tools/probes/` 存放产出论文分析部分数字的
-七个机理探针（默认样本 `Checkpoint_B_256/model_epoch_4.pth`）：
+机理探针（默认样本 `Checkpoint_B_256/model_epoch_4.pth`）。探针分三组——完整表格见
+[`Source/Tools/probes/README.md`](Source/Tools/probes/README.md)。核心的*构造相似性*组：
 
 - `probe_b_similarity.py` —— B 学到的跨模态相似性**存在于何处**（原始 stride-16 余弦 vs
   投影后的 stride-4 匹配子空间；含符号检查）。
@@ -385,11 +485,19 @@ python Source/Tools/eval_test_csv.py --csv <merged_test.csv>   # L2 统计 + PCK
 - `probe_f0_mechanism.py` —— Stage-2 微调是否会**抹掉** Stage-1 的对齐？
   （“F0”机理：S1 vs A-ft vs B 编码器对齐 + 跨编码器 CKA）。
 
+另有两组（自分析阶段归位）：**粒度—维度**恢复扫描（`probe_b_granularity_dim.py`、
+`probe_c_granularity_dim.py`、`probe_b_matchdim{,_ood}.py`、`probe_b_conditional_dims.py`、
+`probe_recovery_by_stride.py`、`probe_alignment_recovery.py`——匹配需要 ≳64 个分布式维度）与
+**有效秩 / 覆盖**探针（`probe_erank_extractors.py`、`probe_erank_cascade.py`、
+`probe_erank_granularity.py`——对齐 23 → 微调 12）。
+
 辅助工具：`oracle_geom_ceiling.py`（理论匹配上界）、
 `stage1_separation_2k.py` / `analyze_stage1_separation.py`（Stage-1 可分性、d′）、
 `coarse_eval_ab.py`（Stage-1 是否对粗匹配层有帮助）、`ckpt_inspect.py`（dim128 vs dim256
 / 是否含 JBU）、`compare_dataset_stats.py`（域间差异统计）、
-`parse_erank_logs.py` / `plot_frozen_arms.py`（论文配图数据准备）。
+`parse_erank_logs.py` / `plot_frozen_arms.py`（论文配图数据准备）、
+`stage_ablation.py`（级联阶段消融）、`ci_reject.py`（风险—覆盖/拒绝曲线）、
+`profile_cascade.py`（运行时/效率剖析）。
 
 ---
 
@@ -398,12 +506,14 @@ python Source/Tools/eval_test_csv.py --csv <merged_test.csv>   # L2 统计 + PCK
 如果使用本代码，请引用论文（TGRS 2026）：
 
 ```bibtex
-@article{TODO_dosrnet_tgrs2026,
-  title   = {TODO: paper title},
-  author  = {TODO: authors},
+@article{rao2026rethinking,
+  title   = {Rethinking {SAR}--Optical Pre-Alignment with Foundation Models
+             for Template Matching},
+  author  = {Rao, Zhibo and He, Mingyi and Li, Xing and Dai, Yuchao and
+             Zhang, Congxuan and Shen, Zhelun and Ding, Biyun},
   journal = {IEEE Transactions on Geoscience and Remote Sensing},
   year    = {2026},
-  note    = {TODO: volume/number/pages/DOI}
+  note    = {To appear}
 }
 ```
 
