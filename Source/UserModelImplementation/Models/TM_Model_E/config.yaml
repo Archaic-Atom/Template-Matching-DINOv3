@@ -43,7 +43,7 @@ architecture:
       # 2026-05-27 redesign: FeatUp JBU at coarse + matching_dim 256.
       dino_dim: 1024
       matching_dim: 256
-      sar_size: 64
+      sar_size: 192                # 2026-06-16: 256/192 geometry to match current direct-C (was 64). Builder reads sar_size from YAML, NOT --sar_size CLI — must equal C for byte-identical state_dict / ckpt reuse.
       raw_stem_dim: 16             # raw-image stem output channels
       use_stride_8_coarse: true    # keep stride-8 coarse for parity with A
       cascade_window_2: 4          # ± cells at stride-2 around 2×coarse argmax → 9×9 H_2

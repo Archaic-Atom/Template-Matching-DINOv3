@@ -15,7 +15,8 @@ except ImportError:
 
 class TM_Dataset(Dataset):
     def __init__(self, train_path: str, train: bool = True,
-                 is_pre_train: bool = True, is_stage_2: bool = False):
+                 is_pre_train: bool = True, is_stage_2: bool = False,
+                 template_size: int = 64):
         """
         Args:
             train_path:   path to .csv or .pt list file.
@@ -44,7 +45,12 @@ class TM_Dataset(Dataset):
         self.sar_name = [os.path.basename(path) for path in self.sar]
         self.rgb_name = [os.path.basename(path) for path in self.rgb]
 
+        # h/w = displacement heatmap grid (stays 64); template = SAR template /
+        # RGB crop / label-clip size (64 -> 192 at 256/192). Mirrors
+        # _tm_webdataset.TMSampleProcessor so both backends agree.
+        # h/w 是位移热图网格(保持 64);template 是模板/裁剪/clip 尺寸(新几何 192)。
         self.h, self.w = 64, 64
+        self.template = template_size
         yy, xx = torch.meshgrid(
             torch.arange(self.h, dtype=torch.float32),
             torch.arange(self.w, dtype=torch.float32),
@@ -84,15 +90,16 @@ class TM_Dataset(Dataset):
         # 与 _tm_webdataset.py 一致：Stage 2 关闭几何增强。
         if self.is_train and not self.is_stage_2:
             sar_img, rgb_img, label = TrainAug(
-                sar_img, rgb_img, label, rgb_img.shape[-2:], (self.h, self.w)
+                sar_img, rgb_img, label, rgb_img.shape[-2:],
+                (self.template, self.template)
             )
 
         x, y = self._sanitize_label(label, rgb_img.shape[-2:])
 
-        # Stage 1 (pre-train): crop RGB to the matched 64x64 patch.
+        # Stage 1 (pre-train): crop RGB to the matched template patch.
         # Stage 2: keep the full RGB search region.
         if self.is_pre_train and not self.is_stage_2:
-            rgb_img = rgb_img[:, y:y + self.h, x:x + self.w]
+            rgb_img = rgb_img[:, y:y + self.template, x:x + self.template]
 
         sar_img = self.preprocess_image(sar_img, True)
         rgb_img = self.preprocess_image(rgb_img, False)
@@ -127,8 +134,8 @@ class TM_Dataset(Dataset):
     def _sanitize_label(self, label: torch.Tensor, image_hw: tuple[int, int]) -> tuple[int, int]:
         x = int(label[0])
         y = int(label[1])
-        max_x = max(0, image_hw[1] - self.w)
-        max_y = max(0, image_hw[0] - self.h)
+        max_x = max(0, image_hw[1] - self.template)
+        max_y = max(0, image_hw[0] - self.template)
         x = min(max(x, 0), max_x)
         y = min(max(y, 0), max_y)
         return x, y

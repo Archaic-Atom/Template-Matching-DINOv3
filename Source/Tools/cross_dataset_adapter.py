@@ -88,10 +88,15 @@ class BaseCrossDatasetAdapter:
     # Defaults from the SEN1-2 training pipeline. Override if you ever change
     # the model input shape.
     TARGET_RES_M: float = 10.0
-    SAR_SIZE: int = 64
-    RGB_SIZE: int = 128
+    # 2026-06-04: matched to the corrected in-domain geometry (optical
+    # reference 256x256, SAR template 192x192) so cross-dataset eval uses the
+    # same protocol as ME-SSM / the in-domain test. Was 64/128.
+    # 2026-06-04：对齐修正后的 in-domain 几何（光学 256 / SAR 模板 192），
+    # 让跨数据集评测与 in-domain 同协议。原为 64/128。
+    SAR_SIZE: int = 192
+    RGB_SIZE: int = 256
     # GT displacement range: uniform in [-MAX_OFFSET, +MAX_OFFSET]. 32 matches
-    # the SEN1-2 training distribution (gt_xy ∈ [0, 64] inside the 128×128 RGB
+    # the SEN1-2 training distribution (gt_xy ∈ [0, 64] inside the 256×256 RGB
     # patch, i.e. ``center_offset ± max_offset`` = 32 ± 32). Earlier the
     # class default was 8 — that produced a tight [24, 40] GT range mismatched
     # with the training distribution and caused Stage-2 cross-eval numbers to
@@ -104,7 +109,8 @@ class BaseCrossDatasetAdapter:
 
     def __init__(self, raw_dir: str, out_dir: str,
                  samples_per_scene: int = 64, seed: int = 12345,
-                 max_scenes: int = 0, max_offset: int = -1) -> None:
+                 max_scenes: int = 0, max_offset: int = -1,
+                 target_res_m: float = 0.0) -> None:
         self.raw_dir = Path(raw_dir)
         self.out_dir = Path(out_dir)
         self.samples_per_scene = samples_per_scene
@@ -117,6 +123,18 @@ class BaseCrossDatasetAdapter:
         # -1 表示用类默认值；否则覆盖到实例，避免污染类属性。
         if max_offset >= 0:
             self.MAX_OFFSET = max_offset
+        # >0 = override TARGET_RES_M (resolution sweep). Must be >= NATIVE_RES_M
+        # (we only DOWNSAMPLE — upsampling past native = interpolated fake
+        # detail, which would confound a resolution-sensitivity study).
+        # >0 时覆盖目标分辨率（分辨率扫描用）。必须 >= 原生分辨率：只降采样，
+        # 上采样过原生 = 插值假细节，会污染"分辨率敏感性"实验。
+        if target_res_m > 0:
+            if target_res_m < self.NATIVE_RES_M - 1e-6:
+                raise ValueError(
+                    f"target_res_m={target_res_m} < native "
+                    f"{self.NATIVE_RES_M}: would upsample (fake detail). "
+                    f"Only downsampling (target >= native) is allowed.")
+            self.TARGET_RES_M = target_res_m
         self.rng = random.Random(seed)
         self.np_rng = np.random.default_rng(seed)
 
@@ -463,6 +481,40 @@ class QXSSAROPTAdapter(BaseCrossDatasetAdapter):
         sar = np.asarray(Image.open(sar_path).convert('L'))
         return sar, opt
 
+    def sample_patches(self, sar_10m: np.ndarray, rgb_10m: np.ndarray):
+        """Patch-is-reference sampling (QXS patches are exactly RGB_SIZE).
+
+        QXS pairs are 256x256 at 1 m — exactly the optical reference size at
+        the new 256/192 geometry, so we CANNOT crop a random RGB_SIZE window +
+        offset from a larger scene (the base method needs scene >= RGB_SIZE +
+        2*MAX_OFFSET = 320 and would yield nothing). Instead the full patch is
+        the optical reference and the SAR template is cropped at a random
+        top-left ∈ [0, RGB_SIZE - SAR_SIZE]; the top-left IS the GT — identical
+        convention to the in-domain generator.
+
+        QXS 的 patch 正好等于 reference 尺寸（256==RGB_SIZE），无法再从更大场景
+        抠窗+偏移（基类需场景≥320，会产出空）。改为整张当 reference，SAR 模板在
+        其内随机偏移，左上角 ∈ [0, RGB_SIZE-SAR_SIZE] 即 GT，与 in-domain 一致。
+        """
+        H, W = sar_10m.shape[:2]
+        rgb_s, sar_s = self.RGB_SIZE, self.SAR_SIZE
+        if H < rgb_s or W < rgb_s:
+            return  # patch smaller than the reference → skip
+        # Centered reference crop (patch == rgb_s here → the whole patch).
+        ry0, rx0 = (H - rgb_s) // 2, (W - rgb_s) // 2
+        rgb_patch = rgb_10m[ry0:ry0 + rgb_s, rx0:rx0 + rgb_s, :]
+        sar_ref = sar_10m[ry0:ry0 + rgb_s, rx0:rx0 + rgb_s]
+        max_off = rgb_s - sar_s  # 64 for 256/192 → top-left ∈ [0, 64] = ±32
+        for _ in range(self.samples_per_scene):
+            cx = self.rng.randint(0, max_off)
+            ry = self.rng.randint(0, max_off)
+            sar_patch = sar_ref[ry:ry + sar_s, cx:cx + sar_s]
+            if sar_patch.shape != (sar_s, sar_s):
+                continue
+            if rgb_patch.shape != (rgb_s, rgb_s, 3):
+                continue
+            yield Sample(sar_patch, rgb_patch, (cx, ry))
+
 
 # =============================================================================
 # SARptical
@@ -555,13 +607,18 @@ def main() -> None:
                              '[-max_offset, +max_offset]. -1 = use class '
                              'default (32 for the SEN1-2-matched setup).')
     parser.add_argument('--seed', type=int, default=12345)
+    parser.add_argument('--target_res_m', type=float, default=0.0,
+                        help='Override target GSD in m/px (resolution sweep). '
+                             '0 = use class default. Must be >= native res '
+                             '(downsample only; upsampling = fake detail).')
     args = parser.parse_args()
 
     cls = ADAPTERS[args.dataset]
     adapter = cls(args.raw_dir, args.out_dir,
                   samples_per_scene=args.samples_per_scene,
                   seed=args.seed, max_scenes=args.max_scenes,
-                  max_offset=args.max_offset)
+                  max_offset=args.max_offset,
+                  target_res_m=args.target_res_m)
     adapter.build()
 
 

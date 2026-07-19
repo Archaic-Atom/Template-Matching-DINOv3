@@ -1,0 +1,114 @@
+# TM_Model_F — learned-IP Stage-1 + frozen-encoder Stage-2 (2026-06-11).
+#
+# The "strong Stage-1, protected" counterfactual for the F0 claim:
+#   - Stage 1: learned-inner-product alignment — symmetric 1×1 projectors
+#     W_s/W_d into a shared 256-d space, PatchNCE on the projected pair,
+#     VICReg variance+covariance on PRE-norm projections to hold effective
+#     rank ≥64 (bare InfoNCE rationally collapses to ~25 dims; Stage-2's
+#     matcher is ~64-dim distributed — the rank-deficiency trap).
+#   - Stage 2: SAR encoder FROZEN (freeze_sar_encoder: true) so Stage-2
+#     cannot overwrite the alignment (the measured F0 mechanism). Matching
+#     architecture identical to A.
+#
+# F0 反事实变体:强 Stage-1(可学内积 + VICReg 防秩塌缩)+ Stage-2 冻结
+# encoder(防覆写)。两臂共用本变体:
+#   臂 1(强 S1 冻结):modelDir 用 strip 后的 F Stage-1 ckpt 引导;
+#   臂 2(随机冻结对照):全新空 modelDir,encoder 随机初始化即被冻结。
+# 与 A 的差异仅:architecture.alignment_ip、stage_1.loss、freeze_sar_encoder。
+
+name: TM_Model_F
+description: Learned-IP Stage-1 (W_s/W_d + VICReg rank>=64) + frozen-SAR Stage-2; matching identical to A.
+
+architecture:
+  rgb_encoder:
+    type: DinoV3Backbone
+    freeze: true
+    args:
+      name: dinov3_vitl16
+      repo_path: "${root_path}/Source/Libs/dinov3/"
+      weights_path: "${root_path}/Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth"
+
+  sar_encoder:
+    type: SarResNet16GN
+    args:
+      in_chans: 3
+      dino_dim: 1024
+      layers: [3, 4, 6]
+      channels: [64, 128, 256]
+
+  # Stage-1-only learned-IP projectors; built only when is_stage_2=False,
+  # checkpointed inside trainable_tail.align_ip.*, dropped at Stage-2 load.
+  # 仅 Stage-1 构建的投影头;存在 trainable_tail.align_ip.*,Stage-2 加载时丢弃。
+  alignment_ip:
+    type: AlignmentIPHead
+    args:
+      sar_dim: 1024
+      dino_dim: 1024
+      proj_dim: 256
+
+  matching:
+    type: StandardMatchingHeadJBU
+    args:
+      # Identical to TM_Model_A (256/192 geometry, fine window ±24).
+      # 与 A 完全一致,保证唯一变量是 Stage-1 目标 + 冻结。
+      dino_dim: 1024
+      matching_dim: 256
+      fine_dim: 32
+      fine_margin: 24
+      sar_size: 192
+
+training:
+  stage_1:
+    load_pretrained_sar: true            # resume support for the Stage-1 run itself
+    loss:
+      type: alignment_ip_loss
+      tau: 0.07
+      radius: 1
+      # VICReg weights: FINAL = 1.0/0.04 (run-1 operating point), with the
+      # rank-64 target ABANDONED as information-theoretically unreachable
+      # (2026-06-11 decision). Evidence: run 1 (λ=1/0.04) settled erank≈22;
+      # run 3 (λ=25/1.0 paper values) DISTORTED to erank≈7 with vic_cov
+      # RISING — facing ~20-d intrinsically-correlated shared content, the
+      # cov penalty kills redundant dims instead of finding orthogonal
+      # content that doesn't exist. erank≈22 ≈ F3's shared CCA subspace
+      # dimension = the alignable cross-modal information capacity. The
+      # 22-vs-64 (E2) mismatch is now a PAPER FINDING, not a tuning failure.
+      # VICReg 权重最终定 1.0/0.04(run-1 操作点),放弃 rank-64 目标 ——
+      # 信息论上达不到:共享内容本征维数 ~20(F3),run 3 重罚反而把秩压到 7
+      # (协方差惩罚面对本质相关的内容,杀冗余维比造正交内容便宜)。
+      # erank≈22 = 可对齐跨模态信息容量;22 vs 64(E2) 的错配是论文发现。
+      lambda_var: 1.0
+      lambda_cov: 0.04
+      erank_rows: 4096
+    optimizer:
+      # Same optimizer family as A's Stage-1 so the objective (not the
+      # optimizer) is the experimental variable.
+      # 与 A 的 Stage-1 同优化器,保证实验变量只有目标函数。
+      type: sgd
+      momentum: 0.9
+      weight_decay: 0.0001
+
+  stage_2:
+    # THE point of this variant: the encoder (trunk) is frozen in Stage-2 so
+    # fine-tuning cannot overwrite Stage-1's alignment. Only the matching
+    # head trains. Requires JF's DDP find_unused_parameters patch (remote).
+    # 本变体的核心:Stage-2 冻结 encoder,微调无法覆写 Stage-1 对齐;只训
+    # 匹配头。依赖远端 JF 的 DDP find_unused_parameters patch。
+    freeze_sar_encoder: true
+    loss:
+      type: two_stage_matching_loss
+      match_w4: 1.0
+      match_w8: 0.5
+      match_sigma4: 1.0
+      match_sigma8: 0.5
+      match_sigma_fine: 1.0
+      match_w_fine: 1.0
+      fine_warmup_epochs: 3
+    optimizer:
+      type: adamw
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+
+inference:
+  argmax_type: hard
+  primary_stride: 4

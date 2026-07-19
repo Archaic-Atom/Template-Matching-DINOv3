@@ -38,8 +38,10 @@ architecture:
       dino_dim: 1024
       matching_dim: 256
       fine_dim: 32
-      fine_margin: 4
-      sar_size: 64
+      # 2026-06-06: B updated to 256/192 geometry to match A for a fair A-vs-B
+      # (the old B@256/192=61.6 was 128/64-trained eval'd zero-shot — NOT fair).
+      fine_margin: 24
+      sar_size: 192
 
 training:
   stage_1:

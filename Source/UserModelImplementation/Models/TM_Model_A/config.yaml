@@ -38,8 +38,19 @@ architecture:
       dino_dim: 1024
       matching_dim: 256
       fine_dim: 32
-      fine_margin: 4
-      sar_size: 64
+      # 2026-06-05 pivot to 256/192 geometry (ME-SSM protocol) + item-6① fine
+      # window widening to fix the flat @1->@3 conversion:
+      #   sar_size 64 -> 192  (SAR template px; fine crop = sar_size + 2*margin)
+      #   fine_margin 4 -> 24 (fine search window ±24px; crop = 192+48 = 240 <=
+      #                        256 RGB; covers most of the [0,64] displacement
+      #                        range so coarse misses get refined, not dropped)
+      # NOTE: the dataloader must ALSO get template_size=192 — pass --sar_size 192
+      # on the CLI (tm_dataloader reads args.sar_size). yaml drives the model head;
+      # CLI drives the dataloader crop. BOTH must be 192.
+      # 转 256/192 几何 + item-6① 加宽 fine 窗口修 @1->@3 平。dataloader 侧也要
+      # template_size=192:CLI 传 --sar_size 192(tm_dataloader 读 args.sar_size)。
+      fine_margin: 24
+      sar_size: 192
 
 training:
   stage_1:
@@ -49,13 +60,28 @@ training:
       tau: 0.07
       radius: 1
       lambda_global: 0.1
+      # 2026-06-05: enable true-cosine PatchNCE. The DINO teacher arrives
+      # un-normalized (large, position-varying ‖r‖), so default logits are
+      # cos·‖r‖/τ — the objective can exploit MAGNITUDE instead of DIRECTION.
+      # normalize_logits L2-normalizes the teacher side so logits = cos/τ,
+      # aligning angle (direction) only. Fixes the near-zero true-cosine
+      # alignment seen with the old un-normalized baseline.
+      # 开启真·余弦 PatchNCE:教师侧未归一化(‖r‖ 大且不均),默认 logits 实为
+      # cos·‖r‖/τ,会学到模长而非方向;归一化后 logits=cos/τ,只对齐角度。
+      normalize_logits: true
     optimizer:
       type: sgd
       momentum: 0.9
       weight_decay: 0.0001
 
   stage_2:
-    freeze_sar_encoder: true             # A freezes SAR after Stage 1
+    # 2026-06-06: A is now the FINE-TUNE variant (paper claim = "Stage-1 alignment
+    # as INITIALIZATION helps"). SAR encoder warm-starts from the Stage-1-aligned
+    # ckpt (load_pretrained_sar: true) but is NOT frozen — it keeps training in
+    # Stage-2. Clean isolation vs B (random SAR init): the ONLY difference from B
+    # is load_pretrained_sar (A: true warm-start, B: false random). Both trainable.
+    # A 改为微调变体:SAR 从 stage-1 对齐 warm-start 但不冻结,和 B 唯一区别是初始化。
+    freeze_sar_encoder: false            # A-finetune: warm-start from Stage-1, keep training
     loss:
       type: two_stage_matching_loss
       # 2026-05-27 σ change: align coarse heads to physical σ = 4 px.
