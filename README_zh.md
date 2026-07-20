@@ -193,27 +193,30 @@ SAR 模板（灰）贴在**预测**位置；绿框 = 真值。
 
 ## 预训练模型
 
-完整的**关键集** checkpoint（提出的级联 + 支撑表 I–VII 的六个消融/Stage-1 模型）以两个压缩包
-发布。每个模型的用途/支撑结论/放置位置见 [`MODELS.md`](MODELS.md)。
+完整的**关键集** checkpoint（提出的级联 + 支撑表 I–VII 的六个消融/Stage-1 模型），连同冻结的
+DINOv3 骨干，统一放在一个百度网盘分享里。每个模型的用途/支撑结论/放置位置见
+[`MODELS.md`](MODELS.md)。
 
-| 压缩包 | 大小 | sha256（前 16 位） | 内容 |
-|---|---|---|---|
-| `PaperModels_TGRS2026_m5.zip` | 272 MB | `be9d348822477b8f` | 提出的级联 `TM_Model_C`（headline） |
-| `PaperModels_TGRS2026_m2.zip` | 698 MB | `5df5a6712a3311f5` | A-ft、B、S1F、RF、Stage-1 A、Stage-1 F |
+> **下载（百度网盘）：**
+> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> ——提取码：`ug7r`
 
-**放置：**解压**到项目根目录**，使 `Checkpoint_*/` 各目录与 `Source/` 同级。启动脚本与配置
-已按这些确切目录名引用，例如：
+分享的 `Weights` 文件夹里就是全部内容：
+
+| 文件 / 目录 | 大小 | 内容 |
+|---|---|---|
+| `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | 1.2 GB | 冻结的 DINOv3 ViT-L/16 光学骨干（公开 Meta 权重） |
+| `Checkpoint_C_phase2_8gpu/` | 237 MB | **提出的级联 `TM_Model_C`**（headline） |
+| `Checkpoint_A_ft_256/`、`Checkpoint_B_256/` | 各 178 MB | S1/Tr（A-ft）、R/Tr（B）可训臂 |
+| `Checkpoint_F_s2_frozen_256/`、`Checkpoint_RF_s2_frozen_256/` | 各 102 MB | S1/Fr、R/Fr 冻结臂 |
+| `Checkpoint_A_stage1_256/`、`Checkpoint_F_stage1_256/` | 76 / 80 MB | Stage-1 对齐（A）与 learned-IP（F）编码器 |
+
+**放置：**骨干放到 `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`（见[安装](#安装)第 5
+步）；各 `Checkpoint_*/` 目录放到**项目根目录**、与 `Source/` 同级——启动脚本与配置已按这些
+确切目录名引用，例如：
 
 ```bash
 bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 ```
-
-**DINOv3 ViT-L/16 卫星骨干**（`dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`，1.2 GB）是
-**公开的** Meta 权重——非本文训练、不在上述压缩包内；请单独下载到 `Weights/`
-（见[安装](#安装)第 5 步）。
-
-> **下载（百度网盘）：**
-> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> ——提取码：`ug7r`
 
 ---
 
@@ -244,6 +247,7 @@ cd JackFramework && ./install.sh && cd ..
 
 # 5. 把 DINOv3 卫星预训练权重放到 Weights/（已 gitignore）：
 #    Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth   （DINOv3 ViT-L/16，约 1.2 GB）
+#    下载见上文“预训练模型”一节（百度网盘分享，提取码 ug7r）。
 ```
 
 **路径常量**在 `Source/UserModelImplementation/user_define.py`：

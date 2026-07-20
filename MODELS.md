@@ -28,11 +28,17 @@ bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 
 ---
 
-## The two download archives / 两个下载包
+## Download / 下载
 
-Models live on two training servers; each archive preserves the
-`Checkpoint_*/model_epoch_*.pth` layout, so you can unzip both into the same
-project root. 模型分布在两台训练机，两个包解压到同一项目根即可合并。
+All checkpoints (plus the DINOv3 backbone) are in one Baidu netdisk share — the
+`Weights` folder holds everything. 全部 checkpoint（连同 DINOv3 骨干）都在一个百度网盘
+分享里，`Weights` 文件夹即为全部内容。
+
+> **Baidu netdisk / 百度网盘:**
+> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> — extraction code: `ug7r`
+
+The same key-set is also staged on the two training servers as two archives (each
+preserves the `Checkpoint_*/model_epoch_*.pth` layout). 关键集在两台训练机上也各打了一个包：
 
 | archive | size | sha256 (first 16) | contents |
 |---|---|---|---|
@@ -63,16 +69,18 @@ Convenience copies also inside the archives:
 
 ---
 
-## DINOv3 optical backbone (download separately) / DINOv3 光学骨干（单独下载）
+## DINOv3 optical backbone / DINOv3 光学骨干
 
 The frozen optical encoder is the **public** DINOv3 ViT-L/16, satellite-pretrained
-(`sat493m`) weights — **not** trained by us, so it is not in the archives above.
-冻结的光学骨干是公开的 DINOv3 ViT-L/16 卫星预训练权重，非本文训练，不在上面两个包内。
+(`sat493m`) weights — **not** trained by us, but included in the netdisk share above
+for convenience (it is *not* inside the two server archives).
+冻结的光学骨干是公开的 DINOv3 ViT-L/16 卫星预训练权重，非本文训练；为方便起见已放在上面的
+网盘分享里（但**不在**两台服务器的压缩包内）。
 
 - file: `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` (1.21 GB)
 - place at: `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`
-- source: Meta DINOv3 release (satellite `sat493m` variant). The path is set in
-  `Source/UserModelImplementation/user_define.py`.
+- source: Meta DINOv3 release (satellite `sat493m` variant); also mirrored in the
+  netdisk share. The path is set in `Source/UserModelImplementation/user_define.py`.
 
 ---
 

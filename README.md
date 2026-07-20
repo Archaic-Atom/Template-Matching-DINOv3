@@ -216,27 +216,31 @@ SAR template (grey) pasted at the **predicted** location; green box = ground tru
 ## Pretrained models
 
 The full **key-set** of checkpoints (proposed cascade + the six ablation / Stage-1
-models backing Tables I–VII) is released as two archives. See
-[`MODELS.md`](MODELS.md) for the per-model manifest (role, paper claim, placement).
+models backing Tables I–VII), together with the frozen DINOv3 backbone, is provided in a
+single Baidu netdisk share. See [`MODELS.md`](MODELS.md) for the per-model manifest (role,
+paper claim, placement).
 
-| archive | size | sha256 (first 16) | contents |
-|---|---|---|---|
-| `PaperModels_TGRS2026_m5.zip` | 272 MB | `be9d348822477b8f` | proposed cascade `TM_Model_C` (headline) |
-| `PaperModels_TGRS2026_m2.zip` | 698 MB | `5df5a6712a3311f5` | A-ft, B, S1F, RF, Stage-1 A, Stage-1 F |
+> **Download — Baidu netdisk / 百度网盘:**
+> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> — extraction code: `ug7r`
 
-**Placement:** unzip **into the project root** so the `Checkpoint_*/` directories sit
-next to `Source/`. The launchers and configs already reference these exact names, e.g.:
+The shared `Weights` folder contains everything:
+
+| file / dir | size | contents |
+|---|---|---|
+| `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | 1.2 GB | frozen DINOv3 ViT-L/16 optical backbone (public Meta weights) |
+| `Checkpoint_C_phase2_8gpu/` | 237 MB | **proposed cascade `TM_Model_C`** (headline) |
+| `Checkpoint_A_ft_256/`, `Checkpoint_B_256/` | 178 MB ea. | S1/Tr (A-ft), R/Tr (B) trainable arms |
+| `Checkpoint_F_s2_frozen_256/`, `Checkpoint_RF_s2_frozen_256/` | 102 MB ea. | S1/Fr, R/Fr frozen arms |
+| `Checkpoint_A_stage1_256/`, `Checkpoint_F_stage1_256/` | 76 / 80 MB | Stage-1 aligned (A) and learned-IP (F) encoders |
+
+**Placement:** put the backbone at `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`
+(see [Installation](#installation) step 5), and the `Checkpoint_*/` directories at the
+**project root** next to `Source/` — the launchers and configs reference these exact
+names, e.g.:
 
 ```bash
 bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 ```
-
-The **DINOv3 ViT-L/16 satellite backbone** (`dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`,
-1.2 GB) is the **public** Meta weights — not trained by us and not in the archives above;
-download it separately into `Weights/` (see [Installation](#installation) step 5).
-
-> **Download (Baidu netdisk / 百度网盘):**
-> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> — extraction code: `ug7r`
 
 ---
 
@@ -268,6 +272,7 @@ cd JackFramework && ./install.sh && cd ..
 
 # 5. Place the DINOv3 satellite-pretrained weights under Weights/ (gitignored):
 #    Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth   (DINOv3 ViT-L/16, ~1.2 GB)
+#    Download: see "Pretrained models" above (Baidu netdisk share, code ug7r).
 ```
 
 **Path constants** live in `Source/UserModelImplementation/user_define.py`:
