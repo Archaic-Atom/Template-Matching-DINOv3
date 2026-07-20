@@ -241,24 +241,30 @@ The shared `Weights` folder contains everything:
 bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 ```
 
-Which names are load-bearing:
+### Which checkpoint goes with which launcher
 
-- **Looked up by exact name** — `Checkpoint_A_stage1_256/` and `Checkpoint_F_stage1_256/`
-  are hard-coded as the Stage-1 warm-start sources in `Scripts/run_a_ft_vs_b.sh` and
-  `Scripts/run_frozen_arms_F.sh`. These two must sit at the project root under exactly
-  these names.
-- **Passed as an argument** — every eval launcher takes the checkpoint *path* as an
-  argument and pins it into a clean staging dir, so those checkpoints can live anywhere.
-  Note the released cascade dir is `Checkpoint_C_phase2_8gpu/` (named after the run that
-  produced it), whereas training from scratch with `Scripts/run_train_C_direct.sh` writes
-  `Checkpoint_C_direct_{sub40,full}_256/` — both work as an argument.
+`by name` = the script opens that directory by its hard-coded name, so it **must** sit at
+the project root under exactly that name. `by arg` = you pass the checkpoint path in, so
+it can live anywhere.
 
-> **The launchers are not portable as shipped.** They were written for our training
-> servers and hard-code, at the top of each file, `PROJ` (project root), `PY` (the
-> `stereoA` conda python) and dataset manifests under `/data4/...`; most also
-> `cd "$PROJ"`. 29 of the 41 scripts in `Scripts/` carry such paths. Edit those lines in
-> whichever script you run, and set `ROOT_PATH` in
-> `Source/UserModelImplementation/user_define.py` (or pass `--root_path`).
+| checkpoint (at project root) | trained by | evaluated by | lookup |
+|---|---|---|---|
+| `Checkpoint_C_phase2_8gpu/model_epoch_2.pth`<br>**proposed cascade** | `run_train_C_direct.sh sub40` → `full_resume` (writes `Checkpoint_C_direct_{sub40,full}_256/`) | `run_eval_C_2k.sh <ckpt> <tag> [gpu]`<br>sub-pixel variant: `run_eval_E_2k.sh <ckpt> <tag> [gpu]` | **by arg** |
+| `Checkpoint_A_ft_256/model_epoch_4.pth`<br>S1/Tr (A-ft) | `run_a_ft_vs_b.sh` (writes here) | `run_eval_std_2k.sh TM_Model_A <ckpt> <tag>` | by name (train) |
+| `Checkpoint_B_256/model_epoch_4.pth`<br>R/Tr (B) | `run_a_ft_vs_b.sh` (writes here) | `run_eval_std_2k.sh TM_Model_B <ckpt> <tag>`<br>also read **by name at epoch 4** by `run_eval_frozen_full.sh` | **by name** |
+| `Checkpoint_F_s2_frozen_256/model_epoch_4.pth`<br>S1/Fr | `run_frozen_arms_F.sh` | `run_eval_frozen_full.sh [FEPOCH] [CSV] [N] [TAG]` — reads **by name** | **by name** |
+| `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth`<br>R/Fr | `run_frozen_arms_F.sh` | `run_eval_frozen_full.sh [FEPOCH] [CSV] [N] [TAG]` — reads **by name** | **by name** |
+| `Checkpoint_A_stage1_256/model_epoch_5.pth`<br>Stage-1 aligned | `start_train_stage1_256_A.sh` | consumed as the Stage-1 warm-start by `run_a_ft_vs_b.sh` (`S1=` line) | **by name** |
+| `Checkpoint_F_stage1_256/model_epoch_9.pth`<br>Stage-1 learned-IP | `start_train_stage1_256_F.sh` | consumed as the Stage-1 warm-start by `run_frozen_arms_F.sh` (`S1=` line) | **by name** |
+| `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`<br>frozen backbone | — (public Meta weights) | every variant, via `${root_path}/Weights/...` in each `config.yaml` | **by name** |
+
+Only the cascade is purely path-driven; **everything else must keep its directory name.**
+The released cascade dir is `Checkpoint_C_phase2_8gpu/` (named after the run that produced
+it) while training from scratch writes `Checkpoint_C_direct_{sub40,full}_256/` — both are
+fine because they are passed as an argument.
+
+> **The launchers are not portable as shipped** — see
+> [Paths you must edit](#paths-you-must-edit) before running any of them.
 
 ---
 
@@ -293,12 +299,47 @@ cd JackFramework && ./install.sh && cd ..
 #    Download: see "Pretrained models" above (Baidu netdisk share, code ug7r).
 ```
 
-**Path constants** live in `Source/UserModelImplementation/user_define.py`:
-`ROOT_PATH` (default `/data/raozhibo/Documents/Programs/Template-Matching-DINOv3/`),
-`DINOv3_PATH = Source/Libs/dinov3/`, and
-`WEIGHTS_PATH = Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`. Edit `ROOT_PATH`
-per machine, or override it at launch with `--root_path` (it is the value substituted
-into each `config.yaml`'s `${root_path}` placeholder for the DINO repo/weights paths).
+### Paths you must edit
+
+Everything below is hard-coded to **our training servers**. Nothing auto-detects, so go
+through this list once before running anything.
+
+**1. Python-side constants** — `Source/UserModelImplementation/user_define.py`:
+
+| constant | shipped value | change? |
+|---|---|---|
+| `ROOT_PATH` | `/data/raozhibo/Documents/Programs/Template-Matching-DINOv3/` | **Yes** — set to your clone, or pass `--root_path` at launch. It is substituted into every `config.yaml`'s `${root_path}` placeholder. |
+| `WEIGHTS_PATH` | `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | No — relative to `ROOT_PATH`; keep the backbone there. |
+| `DINOv3_PATH` | `Source/Libs/dinov3/` | No — relative, the git submodule. |
+| `DINOv2_PATH`, `WEIGHTS_DINOV2_PATH` | `Source/Libs/dinov2/`, `Weights/depth_anything/model.pth` | Unused legacy — ignore. |
+
+**2. Launcher-script headers** — the first lines of each script in `Scripts/`:
+
+| variable | shipped value | in how many scripts |
+|---|---|---|
+| `PROJ` | `/data/raozhibo/Documents/Programs/Template-Matching-DINOv3` (most also `cd "$PROJ"`) | 29 of 41 |
+| `PY` | `/data/raozhibo/anaconda3/envs/stereoA/bin/python` | 28 of 41 |
+
+**3. Dataset / manifest paths** inside the launchers — these point at data that is *not*
+in the repo (see [Data preparation](#data-preparation) to regenerate them):
+
+| variable | shipped value | used for |
+|---|---|---|
+| `MANIFEST`, `CSV`, `EVAL_CSV` | `/data4/datasets/eval2k_opt256_sar192/image_test_2k_256.csv` | in-domain 2k eval (also `eval10k_…`, `eval20k_…` variants) |
+| `CSV`, `EVAL_CSV` (relative form) | `Datasets/test_256_2k.csv` | same eval set, repo-relative variant |
+| `CSV` | `/data5/datasets/cross_eval/whu_opt_sar/cross_eval.csv`<br>`/data5/datasets/cross_eval/qxs_saropt/cross_eval.csv` | cross-dataset zero-shot eval |
+| `RAW` | `/data5/datasets/whu-opt-sar`, `/data5/datasets/QXSLAB_SAROPT` | raw source datasets for the adapters |
+| `OUTBASE` | `/data5/datasets/cross_eval_resolution` | GSD-sweep output |
+| `--trainListPath` | `./Datasets/shard_train_256_full.csv`, `/data5/datasets/TM_shards/shard-…` | WebDataset training shards |
+
+> Note the `/data4` vs `/data5` split is an artifact of our data moving between machines —
+> both appear, so grep for **both** when repointing.
+
+A quick way to see every absolute path a script will use:
+
+```bash
+grep -nE "^(PROJ|PY|MANIFEST|CSV|EVAL_CSV|RAW|OUTBASE)=|/data[0-9]*/" Scripts/<script>.sh
+```
 
 **DDP caveat:** because the optical backbone (and, in some variants, the SAR encoder)
 is frozen, JackFramework's DDP wrap needs `find_unused_parameters=True`. That patch

@@ -13,16 +13,23 @@ move the `Checkpoint_*/` directories to the **project root** next to `Source/`,
 `Scripts/`. 网盘里是一个 `Weights` 文件夹，含骨干与全部 checkpoint：DINOv3 骨干留在
 `Weights/` 内，各 `Checkpoint_*/` 目录移到项目根目录（与 `Source/` 同级）。
 
-Only two directory names are looked up **by name**: `Checkpoint_A_stage1_256/` and
-`Checkpoint_F_stage1_256/`, hard-coded as the Stage-1 warm-start sources in
-`Scripts/run_a_ft_vs_b.sh` and `Scripts/run_frozen_arms_F.sh`. Every eval launcher
-takes the checkpoint *path* as an argument, so the rest may live anywhere.
-只有两个目录名是**按名字**查找的：`Checkpoint_A_stage1_256/` 与 `Checkpoint_F_stage1_256/`
-（在上述两个脚本里写死为 Stage-1 热启动来源）；其余权重都由评测脚本按路径参数传入，放哪都行。
+**Directory names are load-bearing.** Only the cascade is passed to its eval launcher as
+a path argument; every other checkpoint is opened by its hard-coded directory name:
+`Checkpoint_A_stage1_256/` and `Checkpoint_F_stage1_256/` are the Stage-1 warm-start
+sources in `run_a_ft_vs_b.sh` / `run_frozen_arms_F.sh`, and
+`Checkpoint_{F,RF}_s2_frozen_256/` plus `Checkpoint_B_256/` (pinned at epoch 4) are read
+by name in `run_eval_frozen_full.sh`. Keep the names as shipped.
+**目录名是"承重"的**：只有级联是按路径参数传给评测脚本，其余权重都由脚本按写死的目录名打开
+（两个 Stage-1 目录是热启动来源；两个 frozen 臂与 `Checkpoint_B_256/` 由
+`run_eval_frozen_full.sh` 按名读取，B 固定 epoch 4）。请保持原目录名。
 
-> ⚠️ The launchers hard-code our servers' `PROJ` / `PY` / `/data4/...` manifest paths
-> (29 of 41 scripts) — edit those lines, and `ROOT_PATH` in `user_define.py`, before
-> running. 脚本写死了服务器的 `PROJ`/`PY`/数据清单路径（41 个里有 29 个），运行前需自行修改。
+See the README's *"Which checkpoint goes with which launcher"* table for the full
+checkpoint ↔ script mapping. 完整的权重↔脚本对应表见 README。
+
+> ⚠️ The launchers hard-code our servers' `PROJ` / `PY` / `/data4|/data5` manifest paths
+> (29 of 41 scripts) — see the README's *"Paths you must edit"* section before running.
+> 脚本写死了服务器的 `PROJ`/`PY`/数据清单路径（41 个里有 29 个），运行前请先看 README 的
+> “需要修改的路径”一节。
 
 ```
 Template-Matching-DINOv3/
