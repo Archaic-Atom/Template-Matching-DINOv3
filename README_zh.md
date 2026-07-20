@@ -77,7 +77,11 @@ Template-Matching-DINOv3/
 │   │   │   └── _legacy/legacy_A/   # A 的原始手写实现（仅供参考）
 │   │   └── Dataloaders/            # TMDataloader（map-style + WebDataset 双后端）
 │   └── Tools/                      # 评测/指标/探针脚本（+ probes/）
-├── Scripts/                        # 训练 / 评测 / 造数据 启动脚本（256/192）
+├── Scripts/
+│   ├── common.sh                   # 共用配置与助手（所有启动脚本 source 它）
+│   ├── reproduce/                  # ① 用发布的模型直接测试（不训练）
+│   ├── train/                      # ② 自己训练，然后测试
+│   ├── legacy/                     # 原始的逐实验启动脚本（含服务器路径）
 │   └── legacy_128_64/              # 已弃用的 128/64 几何脚本
 ├── Datasets/                       # 仅一个过时示例被跟踪；真实清单在服务器上
 ├── Weights/                        # DINOv3 权重（已 gitignore，需单独下载）
@@ -239,6 +243,44 @@ bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 `Checkpoint_C_direct_{sub40,full}_256/`——两者都作参数传入，所以都能用。
 
 > **脚本按原样并不可移植**——运行任何脚本前请先看[需要修改的路径](#需要修改的路径)。
+
+---
+
+## 快速开始
+
+`Scripts/` 下有两个入口，都会 source `Scripts/common.sh`——它由自身位置推导项目根目录、
+所有数据路径走环境变量，因此仓库放在任何路径都无需改脚本。
+
+### ① 用发布的模型直接测试 —— [`Scripts/reproduce/`](Scripts/reproduce/)
+
+只做推理；不训练，也不会改动任何已发布的权重。
+
+```bash
+export TM_EVAL_CSV=/path/to/image_test_2k_256.csv
+
+bash Scripts/reproduce/eval_cascade.sh                  # 表 I  —— 本文级联
+bash Scripts/reproduce/eval_arms.sh 0                   # 表 II —— 2x2 预对齐实验
+bash Scripts/reproduce/eval_cross_dataset.sh            # 表 III—— 零样本跨数据集
+```
+
+在 RTX 4080 上用发布的 cascade、2k 评测集实测：
+`PCK@1 93.20 / PCK@3 95.70 / PCK@5 96.05`，平均 1.10 px——与论文中该权重的 2k 结果一致。
+
+### ② 自己训练 —— [`Scripts/train/`](Scripts/train/)
+
+```bash
+export TM_TRAIN_LIST=./Datasets/shard_train_256_full.csv
+
+bash Scripts/train/train_cascade.sh smoke               # 单卡，能看到真实 traceback，先跑这个
+bash Scripts/train/train_cascade.sh phase1 4 10         # 子集热启动
+bash Scripts/train/train_cascade.sh phase2 Checkpoint_C_direct_sub40_256/model_epoch_4.pth
+```
+
+预对齐消融（`train_stage1.sh`、`train_arms.sh`）只在复现 2x2 因果实验时才需要——
+本文方法完全不用 Stage-1。
+
+> 原始的逐实验启动脚本已移至 [`Scripts/legacy/`](Scripts/legacy/)，其中写死了我们服务器的
+> 路径，仅作可追溯保留。
 
 ---
 

@@ -86,7 +86,11 @@ Template-Matching-DINOv3/
 │   │   │   └── _legacy/legacy_A/   # A's original hand-written code (reference only)
 │   │   └── Dataloaders/            # TMDataloader (map-style + WebDataset backends)
 │   └── Tools/                      # eval/metric/probe scripts (+ probes/)
-├── Scripts/                        # train / eval / data-gen launchers (256/192)
+├── Scripts/
+│   ├── common.sh                   # shared config + helpers (sourced by all launchers)
+│   ├── reproduce/                  # ① evaluate the RELEASED models (no training)
+│   ├── train/                      # ② train your own, then evaluate
+│   ├── legacy/                     # the original per-experiment launchers (server paths)
 │   └── legacy_128_64/              # superseded 128/64-geometry launchers
 ├── Datasets/                       # only a stale example is tracked; real manifests live on servers
 ├── Weights/                        # DINOv3 checkpoint (gitignored, download separately)
@@ -265,6 +269,47 @@ fine because they are passed as an argument.
 
 > **The launchers are not portable as shipped** — see
 > [Paths you must edit](#paths-you-must-edit) before running any of them.
+
+---
+
+## Quick start
+
+`Scripts/` has two entry points. Both source `Scripts/common.sh`, which derives the
+project root from its own location and reads every data path from the environment —
+so a clone at any path runs without editing a script.
+
+### ① Evaluate the released models — [`Scripts/reproduce/`](Scripts/reproduce/)
+
+Inference only; nothing is trained and no checkpoint is modified.
+
+```bash
+export TM_EVAL_CSV=/path/to/image_test_2k_256.csv
+
+bash Scripts/reproduce/eval_cascade.sh                  # Table I  — proposed cascade
+bash Scripts/reproduce/eval_arms.sh 0                   # Table II — 2x2 pre-alignment test
+bash Scripts/reproduce/eval_cross_dataset.sh            # Table III— zero-shot transfer
+```
+
+Verified on an RTX 4080 with the released cascade on the 2k eval set:
+`PCK@1 93.20 / PCK@3 95.70 / PCK@5 96.05`, mean 1.10 px — matching the paper's 2k
+figures for that checkpoint.
+
+### ② Train your own — [`Scripts/train/`](Scripts/train/)
+
+```bash
+export TM_TRAIN_LIST=./Datasets/shard_train_256_full.csv
+
+bash Scripts/train/train_cascade.sh smoke               # 1 GPU, real tracebacks — do this first
+bash Scripts/train/train_cascade.sh phase1 4 10         # subset warm-start
+bash Scripts/train/train_cascade.sh phase2 Checkpoint_C_direct_sub40_256/model_epoch_4.pth
+```
+
+The pre-alignment ablation (`train_stage1.sh`, `train_arms.sh`) is only needed to
+reproduce the 2x2 causal test — the proposed method does not use Stage-1 at all.
+
+> The original per-experiment launchers now live in
+> [`Scripts/legacy/`](Scripts/legacy/); they hard-code our servers' paths and are kept
+> for provenance only.
 
 ---
 
