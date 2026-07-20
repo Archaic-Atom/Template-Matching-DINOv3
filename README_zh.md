@@ -212,7 +212,8 @@ bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 **公开的** Meta 权重——非本文训练、不在上述压缩包内；请单独下载到 `Weights/`
 （见[安装](#安装)第 5 步）。
 
-> 下载链接（网盘）——**TODO：上传后补充分享地址。**
+> **下载（百度网盘）：**
+> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> ——提取码：`ug7r`
 
 ---
 

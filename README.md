@@ -235,7 +235,8 @@ The **DINOv3 ViT-L/16 satellite backbone** (`dinov3_vitl16_pretrain_sat493m-eadc
 1.2 GB) is the **public** Meta weights — not trained by us and not in the archives above;
 download it separately into `Weights/` (see [Installation](#installation) step 5).
 
-> Download links (network drive) — **TODO: add the shared URLs after upload.**
+> **Download (Baidu netdisk / 百度网盘):**
+> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> — extraction code: `ug7r`
 
 ---
 
