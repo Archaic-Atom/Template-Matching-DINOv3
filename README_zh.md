@@ -77,7 +77,11 @@ Template-Matching-DINOv3/
 │   │   │   └── _legacy/legacy_A/   # A 的原始手写实现（仅供参考）
 │   │   └── Dataloaders/            # TMDataloader（map-style + WebDataset 双后端）
 │   └── Tools/                      # 评测/指标/探针脚本（+ probes/）
-├── Scripts/                        # 训练 / 评测 / 造数据 启动脚本（256/192）
+├── Scripts/
+│   ├── common.sh                   # 共用配置与助手（所有启动脚本 source 它）
+│   ├── reproduce/                  # ① 用发布的模型直接测试（不训练）
+│   ├── train/                      # ② 自己训练，然后测试
+│   ├── legacy/                     # 原始的逐实验启动脚本（含服务器路径）
 │   └── legacy_128_64/              # 已弃用的 128/64 几何脚本
 ├── Datasets/                       # 仅一个过时示例被跟踪；真实清单在服务器上
 ├── Weights/                        # DINOv3 权重（已 gitignore，需单独下载）
@@ -193,26 +197,90 @@ SAR 模板（灰）贴在**预测**位置；绿框 = 真值。
 
 ## 预训练模型
 
-完整的**关键集** checkpoint（提出的级联 + 支撑表 I–VII 的六个消融/Stage-1 模型）以两个压缩包
-发布。每个模型的用途/支撑结论/放置位置见 [`MODELS.md`](MODELS.md)。
+完整的**关键集** checkpoint（提出的级联 + 支撑表 I–VII 的六个消融/Stage-1 模型），连同冻结的
+DINOv3 骨干，统一放在一个百度网盘分享里。每个模型的用途/支撑结论/放置位置见
+[`MODELS.md`](MODELS.md)。
 
-| 压缩包 | 大小 | sha256（前 16 位） | 内容 |
-|---|---|---|---|
-| `PaperModels_TGRS2026_m5.zip` | 272 MB | `be9d348822477b8f` | 提出的级联 `TM_Model_C`（headline） |
-| `PaperModels_TGRS2026_m2.zip` | 698 MB | `5df5a6712a3311f5` | A-ft、B、S1F、RF、Stage-1 A、Stage-1 F |
+> **下载（百度网盘）：**
+> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> ——提取码：`ug7r`
 
-**放置：**解压**到项目根目录**，使 `Checkpoint_*/` 各目录与 `Source/` 同级。启动脚本与配置
-已按这些确切目录名引用，例如：
+分享的 `Weights` 文件夹里就是全部内容：
+
+| 文件 / 目录 | 大小 | 内容 |
+|---|---|---|
+| `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | 1.2 GB | 冻结的 DINOv3 ViT-L/16 光学骨干（公开 Meta 权重） |
+| `Checkpoint_C_phase2_8gpu/` | 237 MB | **提出的级联 `TM_Model_C`**（headline） |
+| `Checkpoint_A_ft_256/`、`Checkpoint_B_256/` | 各 178 MB | S1/Tr（A-ft）、R/Tr（B）可训臂 |
+| `Checkpoint_F_s2_frozen_256/`、`Checkpoint_RF_s2_frozen_256/` | 各 102 MB | S1/Fr、R/Fr 冻结臂 |
+| `Checkpoint_A_stage1_256/`、`Checkpoint_F_stage1_256/` | 76 / 80 MB | Stage-1 对齐（A）与 learned-IP（F）编码器 |
+
+**放置：**骨干放到 `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`（每个 `config.yaml`
+都按 `${root_path}/Weights/...` 解析这个路径）；各 `Checkpoint_*/` 目录放到**项目根目录**、
+与 `Source/` 同级：
 
 ```bash
 bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 ```
 
-**DINOv3 ViT-L/16 卫星骨干**（`dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`，1.2 GB）是
-**公开的** Meta 权重——非本文训练、不在上述压缩包内；请单独下载到 `Weights/`
-（见[安装](#安装)第 5 步）。
+### 哪个权重配哪个脚本
 
-> 下载链接（网盘）——**TODO：上传后补充分享地址。**
+`按名字` = 脚本用写死的目录名去打开它，**必须**以该名字放在项目根目录；
+`按参数` = checkpoint 路径由你传入，放哪都行。
+
+| 权重（放项目根目录） | 由谁训练 | 由谁评测 | 查找方式 |
+|---|---|---|---|
+| `Checkpoint_C_phase2_8gpu/model_epoch_2.pth`<br>**提出的级联** | `run_train_C_direct.sh sub40` → `full_resume`（写出 `Checkpoint_C_direct_{sub40,full}_256/`） | `run_eval_C_2k.sh <ckpt> <tag> [gpu]`<br>亚像素变体：`run_eval_E_2k.sh <ckpt> <tag> [gpu]` | **按参数** |
+| `Checkpoint_A_ft_256/model_epoch_4.pth`<br>S1/Tr（A-ft） | `run_a_ft_vs_b.sh`（写到此目录） | `run_eval_std_2k.sh TM_Model_A <ckpt> <tag>` | 按名字（训练时） |
+| `Checkpoint_B_256/model_epoch_4.pth`<br>R/Tr（B） | `run_a_ft_vs_b.sh`（写到此目录） | `run_eval_std_2k.sh TM_Model_B <ckpt> <tag>`<br>另外 `run_eval_frozen_full.sh` 会**按名字固定读 epoch 4** | **按名字** |
+| `Checkpoint_F_s2_frozen_256/model_epoch_4.pth`<br>S1/Fr | `run_frozen_arms_F.sh` | `run_eval_frozen_full.sh [FEPOCH] [CSV] [N] [TAG]`——**按名字**读 | **按名字** |
+| `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth`<br>R/Fr | `run_frozen_arms_F.sh` | `run_eval_frozen_full.sh [FEPOCH] [CSV] [N] [TAG]`——**按名字**读 | **按名字** |
+| `Checkpoint_A_stage1_256/model_epoch_5.pth`<br>Stage-1 对齐 | `start_train_stage1_256_A.sh` | 作为 Stage-1 热启动被 `run_a_ft_vs_b.sh`（`S1=` 行）取用 | **按名字** |
+| `Checkpoint_F_stage1_256/model_epoch_9.pth`<br>Stage-1 learned-IP | `start_train_stage1_256_F.sh` | 作为 Stage-1 热启动被 `run_frozen_arms_F.sh`（`S1=` 行）取用 | **按名字** |
+| `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`<br>冻结骨干 | ——（公开 Meta 权重） | 所有变体，经各 `config.yaml` 的 `${root_path}/Weights/...` | **按名字** |
+
+只有级联是纯按路径传的，**其余全部必须保留原目录名**。发布的级联目录是
+`Checkpoint_C_phase2_8gpu/`（沿用产出它那次训练的名字），从头训练写出的则是
+`Checkpoint_C_direct_{sub40,full}_256/`——两者都作参数传入，所以都能用。
+
+> **脚本按原样并不可移植**——运行任何脚本前请先看[需要修改的路径](#需要修改的路径)。
+
+---
+
+## 快速开始
+
+`Scripts/` 下有两个入口，都会 source `Scripts/common.sh`——它由自身位置推导项目根目录、
+所有数据路径走环境变量，因此仓库放在任何路径都无需改脚本。
+
+### ① 用发布的模型直接测试 —— [`Scripts/reproduce/`](Scripts/reproduce/)
+
+只做推理；不训练，也不会改动任何已发布的权重。
+
+```bash
+export TM_EVAL_CSV=/path/to/image_test_2k_256.csv
+
+bash Scripts/reproduce/eval_cascade.sh                  # 表 I  —— 本文级联
+bash Scripts/reproduce/eval_arms.sh 0                   # 表 II —— 2x2 预对齐实验
+bash Scripts/reproduce/eval_cross_dataset.sh            # 表 III—— 零样本跨数据集
+```
+
+在 RTX 4080 上用发布的 cascade、2k 评测集实测：
+`PCK@1 93.20 / PCK@3 95.70 / PCK@5 96.05`，平均 1.10 px——与论文中该权重的 2k 结果一致。
+
+### ② 自己训练 —— [`Scripts/train/`](Scripts/train/)
+
+```bash
+export TM_TRAIN_LIST=./Datasets/shard_train_256_full.csv
+
+bash Scripts/train/train_cascade.sh smoke               # 单卡，能看到真实 traceback，先跑这个
+bash Scripts/train/train_cascade.sh phase1 4 10         # 子集热启动
+bash Scripts/train/train_cascade.sh phase2 Checkpoint_C_direct_sub40_256/model_epoch_4.pth
+```
+
+预对齐消融（`train_stage1.sh`、`train_arms.sh`）只在复现 2x2 因果实验时才需要——
+本文方法完全不用 Stage-1。
+
+> 原始的逐实验启动脚本已移至 [`Scripts/legacy/`](Scripts/legacy/)，其中写死了我们服务器的
+> 路径，仅作可追溯保留。
 
 ---
 
@@ -243,14 +311,47 @@ cd JackFramework && ./install.sh && cd ..
 
 # 5. 把 DINOv3 卫星预训练权重放到 Weights/（已 gitignore）：
 #    Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth   （DINOv3 ViT-L/16，约 1.2 GB）
+#    下载见上文“预训练模型”一节（百度网盘分享，提取码 ug7r）。
 ```
 
-**路径常量**在 `Source/UserModelImplementation/user_define.py`：
-`ROOT_PATH`（默认 `/data/raozhibo/Documents/Programs/Template-Matching-DINOv3/`）、
-`DINOv3_PATH = Source/Libs/dinov3/`、
-`WEIGHTS_PATH = Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`。请按机器修改
-`ROOT_PATH`，或在启动时用 `--root_path` 覆盖（它会被替换进各 `config.yaml` 的
-`${root_path}` 占位符，用于 DINO 仓库/权重路径）。
+### 需要修改的路径
+
+下列路径全部写死指向**我们的训练服务器**，没有任何自动探测。运行任何东西之前请先过一遍这份清单。
+
+**1. Python 侧常量**——`Source/UserModelImplementation/user_define.py`：
+
+| 常量 | 发布时的值 | 要改吗 |
+|---|---|---|
+| `ROOT_PATH` | `/data/raozhibo/Documents/Programs/Template-Matching-DINOv3/` | **要** ——改成你自己的克隆路径，或启动时传 `--root_path`。它会被替换进各 `config.yaml` 的 `${root_path}` 占位符。 |
+| `WEIGHTS_PATH` | `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | 不用——相对于 `ROOT_PATH`，骨干放这即可。 |
+| `DINOv3_PATH` | `Source/Libs/dinov3/` | 不用——相对路径，git 子模块。 |
+| `DINOv2_PATH`、`WEIGHTS_DINOV2_PATH` | `Source/Libs/dinov2/`、`Weights/depth_anything/model.pth` | 遗留未使用，忽略。 |
+
+**2. 启动脚本头部变量**——`Scripts/` 下各脚本的开头几行：
+
+| 变量 | 发布时的值 | 涉及脚本数 |
+|---|---|---|
+| `PROJ` | `/data/raozhibo/Documents/Programs/Template-Matching-DINOv3`（多数脚本还会 `cd "$PROJ"`） | 41 个里 29 个 |
+| `PY` | `/data/raozhibo/anaconda3/envs/stereoA/bin/python` | 41 个里 28 个 |
+
+**3. 脚本内的数据集/清单路径**——这些数据**不在**仓库里（重新生成见[数据准备](#数据准备)）：
+
+| 变量 | 发布时的值 | 用途 |
+|---|---|---|
+| `MANIFEST`、`CSV`、`EVAL_CSV` | `/data4/datasets/eval2k_opt256_sar192/image_test_2k_256.csv` | 域内 2k 评测（另有 `eval10k_…`、`eval20k_…` 变体） |
+| `CSV`、`EVAL_CSV`（相对写法） | `Datasets/test_256_2k.csv` | 同一评测集的仓库相对路径写法 |
+| `CSV` | `/data5/datasets/cross_eval/whu_opt_sar/cross_eval.csv`<br>`/data5/datasets/cross_eval/qxs_saropt/cross_eval.csv` | 跨数据集零样本评测 |
+| `RAW` | `/data5/datasets/whu-opt-sar`、`/data5/datasets/QXSLAB_SAROPT` | 适配器用的原始数据集 |
+| `OUTBASE` | `/data5/datasets/cross_eval_resolution` | GSD 扫描输出 |
+| `--trainListPath` | `./Datasets/shard_train_256_full.csv`、`/data5/datasets/TM_shards/shard-…` | WebDataset 训练分片 |
+
+> `/data4` 与 `/data5` 并存是数据在机器间迁移留下的痕迹——重定向时**两个都要 grep**。
+
+快速查看某个脚本会用到的全部绝对路径：
+
+```bash
+grep -nE "^(PROJ|PY|MANIFEST|CSV|EVAL_CSV|RAW|OUTBASE)=|/data[0-9]*/" Scripts/<script>.sh
+```
 
 **DDP 注意：**由于光学骨干（部分变体下还有 SAR 编码器）被冻结，JackFramework 的 DDP
 封装需要 `find_unused_parameters=True`。该补丁只存在于训练服务器上的 JackFramework

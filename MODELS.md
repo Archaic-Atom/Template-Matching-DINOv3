@@ -7,17 +7,38 @@ matching). Every checkpoint maps to the paper claim or table it supports.
 **Geometry / 几何**: optical reference **256×256**, SAR template **192×192**
 (ME-SSM protocol). All Stage-2 models use `matching_dim = 256`.
 
-**How to use / 如何使用**: unzip **into the project root** so the
-`Checkpoint_*/` directories sit next to `Source/`, `Scripts/`, `Weights/`. The
-training/eval launchers and configs already reference these exact directory
-names. 解压到项目根目录即可，启动脚本/配置已按这些目录名引用。
+**How to use / 如何使用**: the netdisk share is one `Weights` folder holding both
+the backbone and every checkpoint. Keep the DINOv3 backbone inside `Weights/`, and
+move the `Checkpoint_*/` directories to the **project root** next to `Source/`,
+`Scripts/`. 网盘里是一个 `Weights` 文件夹，含骨干与全部 checkpoint：DINOv3 骨干留在
+`Weights/` 内，各 `Checkpoint_*/` 目录移到项目根目录（与 `Source/` 同级）。
+
+**Directory names are load-bearing.** Only the cascade is passed to its eval launcher as
+a path argument; every other checkpoint is opened by its hard-coded directory name:
+`Checkpoint_A_stage1_256/` and `Checkpoint_F_stage1_256/` are the Stage-1 warm-start
+sources in `run_a_ft_vs_b.sh` / `run_frozen_arms_F.sh`, and
+`Checkpoint_{F,RF}_s2_frozen_256/` plus `Checkpoint_B_256/` (pinned at epoch 4) are read
+by name in `run_eval_frozen_full.sh`. Keep the names as shipped.
+**目录名是"承重"的**：只有级联是按路径参数传给评测脚本，其余权重都由脚本按写死的目录名打开
+（两个 Stage-1 目录是热启动来源；两个 frozen 臂与 `Checkpoint_B_256/` 由
+`run_eval_frozen_full.sh` 按名读取，B 固定 epoch 4）。请保持原目录名。
+
+See the README's *"Which checkpoint goes with which launcher"* table for the full
+checkpoint ↔ script mapping. 完整的权重↔脚本对应表见 README。
+
+> ⚠️ The launchers hard-code our servers' `PROJ` / `PY` / `/data4|/data5` manifest paths
+> (29 of 41 scripts) — see the README's *"Paths you must edit"* section before running.
+> 脚本写死了服务器的 `PROJ`/`PY`/数据清单路径（41 个里有 29 个），运行前请先看 README 的
+> “需要修改的路径”一节。
 
 ```
 Template-Matching-DINOv3/
-├── Source/  Scripts/  Weights/ ...
-├── Checkpoint_C_phase2_8gpu/        # ← from PaperModels_*_m5.zip
-├── Checkpoint_A_ft_256/             # ← from PaperModels_*_m2.zip
-├── Checkpoint_B_256/                # ...
+├── Source/  Scripts/ ...
+├── Weights/
+│   └── dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth   # ← backbone stays here
+├── Checkpoint_C_phase2_8gpu/        # ← moved out of the downloaded Weights/
+├── Checkpoint_A_ft_256/
+├── Checkpoint_B_256/
 └── ...
 ```
 
@@ -28,11 +49,17 @@ bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 
 ---
 
-## The two download archives / 两个下载包
+## Download / 下载
 
-Models live on two training servers; each archive preserves the
-`Checkpoint_*/model_epoch_*.pth` layout, so you can unzip both into the same
-project root. 模型分布在两台训练机，两个包解压到同一项目根即可合并。
+All checkpoints (plus the DINOv3 backbone) are in one Baidu netdisk share — the
+`Weights` folder holds everything. 全部 checkpoint（连同 DINOv3 骨干）都在一个百度网盘
+分享里，`Weights` 文件夹即为全部内容。
+
+> **Baidu netdisk / 百度网盘:**
+> <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> — extraction code: `ug7r`
+
+The same key-set is also staged on the two training servers as two archives (each
+preserves the `Checkpoint_*/model_epoch_*.pth` layout). 关键集在两台训练机上也各打了一个包：
 
 | archive | size | sha256 (first 16) | contents |
 |---|---|---|---|
@@ -63,16 +90,18 @@ Convenience copies also inside the archives:
 
 ---
 
-## DINOv3 optical backbone (download separately) / DINOv3 光学骨干（单独下载）
+## DINOv3 optical backbone / DINOv3 光学骨干
 
 The frozen optical encoder is the **public** DINOv3 ViT-L/16, satellite-pretrained
-(`sat493m`) weights — **not** trained by us, so it is not in the archives above.
-冻结的光学骨干是公开的 DINOv3 ViT-L/16 卫星预训练权重，非本文训练，不在上面两个包内。
+(`sat493m`) weights — **not** trained by us, but included in the netdisk share above
+for convenience (it is *not* inside the two server archives).
+冻结的光学骨干是公开的 DINOv3 ViT-L/16 卫星预训练权重，非本文训练；为方便起见已放在上面的
+网盘分享里（但**不在**两台服务器的压缩包内）。
 
 - file: `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` (1.21 GB)
 - place at: `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`
-- source: Meta DINOv3 release (satellite `sat493m` variant). The path is set in
-  `Source/UserModelImplementation/user_define.py`.
+- source: Meta DINOv3 release (satellite `sat493m` variant); also mirrored in the
+  netdisk share. The path is set in `Source/UserModelImplementation/user_define.py`.
 
 ---
 
