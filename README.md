@@ -234,13 +234,31 @@ The shared `Weights` folder contains everything:
 | `Checkpoint_A_stage1_256/`, `Checkpoint_F_stage1_256/` | 76 / 80 MB | Stage-1 aligned (A) and learned-IP (F) encoders |
 
 **Placement:** put the backbone at `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`
-(see [Installation](#installation) step 5), and the `Checkpoint_*/` directories at the
-**project root** next to `Source/` — the launchers and configs reference these exact
-names, e.g.:
+(the path every `config.yaml` resolves as `${root_path}/Weights/...`), and the
+`Checkpoint_*/` directories at the **project root** next to `Source/`:
 
 ```bash
 bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 ```
+
+Which names are load-bearing:
+
+- **Looked up by exact name** — `Checkpoint_A_stage1_256/` and `Checkpoint_F_stage1_256/`
+  are hard-coded as the Stage-1 warm-start sources in `Scripts/run_a_ft_vs_b.sh` and
+  `Scripts/run_frozen_arms_F.sh`. These two must sit at the project root under exactly
+  these names.
+- **Passed as an argument** — every eval launcher takes the checkpoint *path* as an
+  argument and pins it into a clean staging dir, so those checkpoints can live anywhere.
+  Note the released cascade dir is `Checkpoint_C_phase2_8gpu/` (named after the run that
+  produced it), whereas training from scratch with `Scripts/run_train_C_direct.sh` writes
+  `Checkpoint_C_direct_{sub40,full}_256/` — both work as an argument.
+
+> **The launchers are not portable as shipped.** They were written for our training
+> servers and hard-code, at the top of each file, `PROJ` (project root), `PY` (the
+> `stereoA` conda python) and dataset manifests under `/data4/...`; most also
+> `cd "$PROJ"`. 29 of the 41 scripts in `Scripts/` carry such paths. Edit those lines in
+> whichever script you run, and set `ROOT_PATH` in
+> `Source/UserModelImplementation/user_define.py` (or pass `--root_path`).
 
 ---
 

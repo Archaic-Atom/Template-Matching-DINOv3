@@ -210,13 +210,28 @@ DINOv3 骨干，统一放在一个百度网盘分享里。每个模型的用途/
 | `Checkpoint_F_s2_frozen_256/`、`Checkpoint_RF_s2_frozen_256/` | 各 102 MB | S1/Fr、R/Fr 冻结臂 |
 | `Checkpoint_A_stage1_256/`、`Checkpoint_F_stage1_256/` | 76 / 80 MB | Stage-1 对齐（A）与 learned-IP（F）编码器 |
 
-**放置：**骨干放到 `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`（见[安装](#安装)第 5
-步）；各 `Checkpoint_*/` 目录放到**项目根目录**、与 `Source/` 同级——启动脚本与配置已按这些
-确切目录名引用，例如：
+**放置：**骨干放到 `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`（每个 `config.yaml`
+都按 `${root_path}/Weights/...` 解析这个路径）；各 `Checkpoint_*/` 目录放到**项目根目录**、
+与 `Source/` 同级：
 
 ```bash
 bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 ```
+
+哪些目录名是"承重"的：
+
+- **按确切名字查找**——`Checkpoint_A_stage1_256/` 与 `Checkpoint_F_stage1_256/` 在
+  `Scripts/run_a_ft_vs_b.sh`、`Scripts/run_frozen_arms_F.sh` 里被写死为 Stage-1 热启动来源。
+  这两个必须以确切名字放在项目根目录。
+- **按参数传入**——所有评测脚本都把 checkpoint **路径**当参数收，再钉进干净的暂存目录，
+  因此这些权重放哪都行。注意发布的级联目录名是 `Checkpoint_C_phase2_8gpu/`（沿用产出它那次
+  训练的名字），而用 `Scripts/run_train_C_direct.sh` 从头训练写出的是
+  `Checkpoint_C_direct_{sub40,full}_256/`——两者作参数都能用。
+
+> **脚本按原样并不可移植。** 它们是为我们的训练服务器写的，每个文件顶部写死了 `PROJ`
+> （项目根）、`PY`（`stereoA` conda python）以及 `/data4/...` 下的数据清单，多数还会
+> `cd "$PROJ"`。`Scripts/` 里 41 个脚本中有 29 个带这类路径。请在你要跑的脚本里改掉这几行，
+> 并设置 `Source/UserModelImplementation/user_define.py` 的 `ROOT_PATH`（或传 `--root_path`）。
 
 ---
 

@@ -7,17 +7,31 @@ matching). Every checkpoint maps to the paper claim or table it supports.
 **Geometry / 几何**: optical reference **256×256**, SAR template **192×192**
 (ME-SSM protocol). All Stage-2 models use `matching_dim = 256`.
 
-**How to use / 如何使用**: unzip **into the project root** so the
-`Checkpoint_*/` directories sit next to `Source/`, `Scripts/`, `Weights/`. The
-training/eval launchers and configs already reference these exact directory
-names. 解压到项目根目录即可，启动脚本/配置已按这些目录名引用。
+**How to use / 如何使用**: the netdisk share is one `Weights` folder holding both
+the backbone and every checkpoint. Keep the DINOv3 backbone inside `Weights/`, and
+move the `Checkpoint_*/` directories to the **project root** next to `Source/`,
+`Scripts/`. 网盘里是一个 `Weights` 文件夹，含骨干与全部 checkpoint：DINOv3 骨干留在
+`Weights/` 内，各 `Checkpoint_*/` 目录移到项目根目录（与 `Source/` 同级）。
+
+Only two directory names are looked up **by name**: `Checkpoint_A_stage1_256/` and
+`Checkpoint_F_stage1_256/`, hard-coded as the Stage-1 warm-start sources in
+`Scripts/run_a_ft_vs_b.sh` and `Scripts/run_frozen_arms_F.sh`. Every eval launcher
+takes the checkpoint *path* as an argument, so the rest may live anywhere.
+只有两个目录名是**按名字**查找的：`Checkpoint_A_stage1_256/` 与 `Checkpoint_F_stage1_256/`
+（在上述两个脚本里写死为 Stage-1 热启动来源）；其余权重都由评测脚本按路径参数传入，放哪都行。
+
+> ⚠️ The launchers hard-code our servers' `PROJ` / `PY` / `/data4/...` manifest paths
+> (29 of 41 scripts) — edit those lines, and `ROOT_PATH` in `user_define.py`, before
+> running. 脚本写死了服务器的 `PROJ`/`PY`/数据清单路径（41 个里有 29 个），运行前需自行修改。
 
 ```
 Template-Matching-DINOv3/
-├── Source/  Scripts/  Weights/ ...
-├── Checkpoint_C_phase2_8gpu/        # ← from PaperModels_*_m5.zip
-├── Checkpoint_A_ft_256/             # ← from PaperModels_*_m2.zip
-├── Checkpoint_B_256/                # ...
+├── Source/  Scripts/ ...
+├── Weights/
+│   └── dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth   # ← backbone stays here
+├── Checkpoint_C_phase2_8gpu/        # ← moved out of the downloaded Weights/
+├── Checkpoint_A_ft_256/
+├── Checkpoint_B_256/
 └── ...
 ```
 
