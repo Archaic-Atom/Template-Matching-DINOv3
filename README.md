@@ -1,6 +1,6 @@
 # Template-Matching-DINOv3 (DOSR-Net)
 
-![Python](https://img.shields.io/badge/python-%3E=3.8-green.svg?style=plastic)
+![Python](https://img.shields.io/badge/python-3.11-green.svg?style=plastic)
 ![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=plastic)
 ![License MIT](https://img.shields.io/badge/license-MIT-green.svg?style=plastic)
 
@@ -17,19 +17,16 @@ training loop, DDP launcher, logging and checkpoint I/O.
 <p align="center"><img src="assets/pipeline.png" width="100%" alt="DOSR-Net pipeline"></p>
 
 > **Paper (IEEE TGRS 2026):** *Rethinking SAR–Optical Pre-Alignment with
-> Foundation Models for Template Matching.* The central finding is that a usable
-> cross-modal similarity does **not pre-exist** in the encoders — it is
-> *constructed* inside a task-specific matching projection and is
-> high-dimensional (needs ≳64 directions), whereas contrastive pre-alignment
-> supplies only a low-rank (≈22) code that fine-tuning **overwrites**. So a
-> direct-trained cascade, with no pre-alignment stage, reaches state of the art.
-> See [Results](#results).
+> Foundation Models for Template Matching.* The matcher constructs a usable
+> cross-modal score while the raw feature spaces remain separated.
+> At the main budget, five seeds give close final means for pre-aligned and
+> random initialization under full SAR encoder fine-tuning. Pre-alignment helps
+> frozen encoders and some partial-freezing or small-data settings.
+> The direct-trained cascade reaches CMR(1/3) of 93.30/95.83 on the full SEN1-2 test.
 
-The repository is organized as an **analysis-led ablation family (`TM_Model_A..F`)**.
-The headline/proposed model is **`TM_Model_C`** — a direct-trained cascade matching
-head. One of the paper's findings is that contrastive Stage-1 *pre-alignment* of the
-SAR encoder does **not** improve in-domain matching over direct training; several
-variants exist precisely to measure that (see [Model variants](#model-variants)).
+The model family includes `TM_Model_A..G`, `TM_Model_CB` and `TM_Model_CW`.
+`TM_Model_C` is the direct-trained cascade. The other variants test initialization,
+encoder trainability, the optical provider and coarse upsampling.
 
 > For the authoritative, deep developer guide (entry-point chain, config-vs-CLI
 > precedence, dataloader contracts, the cascade head internals, and a list of known
@@ -56,13 +53,13 @@ variants exist precisely to measure that (see [Model variants](#model-variants))
 - **JackFramework + WebDataset training.** Iterable WebDataset shard pipeline for the
   ~13.2M-sample training set, with custom DDP-balanced shard splitting, large sample
   shuffle buffers, and a map-style backend for evaluation.
-- **`TM_Model_A..F` ablation family** isolating Stage-1 pre-alignment-as-init, cascade
+- **`TM_Model_A..G`, `CB` and `CW` ablation family** isolating Stage-1 pre-alignment-as-init, cascade
   vs standard-fine, sub-pixel decode, and a learned-inner-product (VICReg) probe.
 - **Cross-dataset zero-shot evaluation** adapters for **WHU-OPT-SAR** (cross-sensor)
   and **QXS-SAROPT** (cross-resolution), plus a controlled GSD-sweep harness.
 - **Analysis / probe tooling** (`Source/Tools/`, `Source/Tools/probes/`) that produces
   the mechanistic numbers in the paper (where similarity lives, control batteries,
-  effective-rank trajectories, oracle ceilings).
+  readout-specific recovery curves, CKA and localization controls).
 
 ---
 
@@ -78,10 +75,10 @@ Template-Matching-DINOv3/
 │   │   ├── user_interface.py      # CLI surface + dataset/model zoo dispatch
 │   │   ├── user_define.py         # ROOT_PATH / DINOv3 repo + weights path constants
 │   │   ├── Models/
-│   │   │   ├── __init__.py        # model_zoo: TM_Model_A..F → interface classes
+│   │   │   ├── __init__.py        # model_zoo: A..G, CB, CW → interface classes
 │   │   │   ├── builder.py         # YAML → ComposedTM assembly
 │   │   │   ├── _interface_base.py # generic JackFramework model handler
-│   │   │   ├── TM_Model_{A..F}/   # per-variant config.yaml (+ thin __init__.py)
+│   │   │   ├── TM_Model_{A..G,CB,CW}/   # per-variant config.yaml (+ thin __init__.py)
 │   │   │   ├── _components/        # backbones, JBU, matching heads, losses, decode
 │   │   │   └── _legacy/legacy_A/   # A's original hand-written code (reference only)
 │   │   └── Dataloaders/            # TMDataloader (map-style + WebDataset backends)
@@ -92,7 +89,7 @@ Template-Matching-DINOv3/
 │   ├── train/                      # ② train your own, then evaluate
 │   ├── legacy/                     # the original per-experiment launchers (server paths)
 │   └── legacy_128_64/              # superseded 128/64-geometry launchers
-├── Datasets/                       # only a stale example is tracked; real manifests live on servers
+├── Datasets/                       # CSV manifest example; image data are downloaded separately
 ├── Weights/                        # DINOv3 checkpoint (gitignored, download separately)
 ├── assets/                         # README figures (pipeline, qualitative, ...)
 ├── MODELS.md                       # pretrained-model manifest (download + placement)
@@ -107,12 +104,11 @@ See **[`CODE_STRUCTURE.md` §1](CODE_STRUCTURE.md)** for the full, current tree 
 
 ## Model variants
 
-All six variants share the **same backbones** (frozen DINOv3 ViT-L/16 +
-`SarResNet16GN`), the **same coarse stride-4 + stride-8 JBU matching**, and the
-**256/192 geometry** (`matching_dim = 256`, `sar_size = 192`). Each `TM_Model_X/` is a
+The variants share frozen DINOv3 ViT-L/16 optical features, a `SarResNet16GN`
+SAR encoder, and **256/192 geometry** (`matching_dim = 256`, `sar_size = 192`). Each `TM_Model_X/` is a
 thin `ComponentBasedInterface` subclass that only sets `CONFIG_PATH`; all behavior is
-in its `config.yaml`. Variants differ along three axes: the **Stage-1 objective**, the
-**Stage-2 SAR-encoder freeze**, and the **fine/decode head**.
+in its `config.yaml`. Variants control Stage-1 initialization, encoder freezing,
+matching and upsampling, and the optical provider.
 
 | Variant | Matching head | Stage-1 (`load_pretrained_sar`) | Stage-2 SAR (`freeze_sar_encoder`) | Stage-2 loss | Decode | What it isolates |
 |---|---|---|---|---|---|---|
@@ -122,6 +118,9 @@ in its `config.yaml`. Variants differ along three axes: the **Stage-1 objective*
 | **D** | `StandardMatchingHeadJBU` | `true` | `true` (frozen) | `two_stage_matching_loss` | `soft_subpixel` | Sub-pixel decode on A's head (reuses A's ckpt; eval-only) |
 | **E** | `CascadeHeadJBU` | `true` * | `true` * | `cascade_loss` | `soft_subpixel` | Cascade + sub-pixel; **evaluated on C's checkpoint** |
 | **F** | `StandardMatchingHeadJBU` (+ `AlignmentIPHead` in Stage-1) | `true` | `true` (frozen) | `two_stage_matching_loss` | hard argmax | Learned-inner-product Stage-1 (W_s/W_d + VICReg rank floor), frozen-encoder Stage-2 |
+| **G** | `StandardMatchingHeadJBU` | shared Stage-1 checkpoint or random | `false` | `two_stage_matching_loss` | hard argmax | Trainable row of the shared-initialization four-arm test |
+| **CB** | `CascadeHeadBilinear` | `false` | `false` | `cascade_loss` | hard argmax | Replace only coarse stride-16-to-4/8 JBU lifts with bilinear interpolation |
+| **CW** | `CascadeHeadJBU` | `false` | `false` | `cascade_loss` | hard argmax | Use the web-pretrained LVD-1689M optical provider |
 
 **Checkpoint-reuse:** D reuses A's checkpoint and E reuses C's checkpoint — both add
 only an eval-time `argmax_type` (sub-pixel) change, with `matching.args` kept
@@ -139,11 +138,10 @@ A's checkpoint, not trained from its own config. Sub-pixel exists in code
 > decode, evaluated on C's checkpoint"; confirm intent before training E from its own
 > config.
 
-The paired comparisons the table supports: **A vs B** isolates Stage-1-as-init;
-**C vs B** isolates cascade vs standard-fine; **A vs D** and **C vs E** isolate
-sub-pixel decode; **F** isolates a protected, strong-Stage-1 objective. A 2×2
-"frozen-arms" causal study (init × freeze) is documented in
-[`CODE_STRUCTURE.md §7`](CODE_STRUCTURE.md).
+The revised four-arm test uses F for frozen encoders and G for trainable
+encoders. Both pre-aligned arms use the same Stage-1 checkpoint. C versus CB
+keeps the fine learned upsamplers and raw-image stems unchanged.
+The original A/B/F results remain the submitted single-run comparison.
 
 ---
 
@@ -152,6 +150,9 @@ sub-pixel decode; **F** isolates a protected, strong-Stage-1 objective. A 2×2
 All numbers follow **ME-SSM's evaluation protocol** on SEN1-2 (optical reference
 256×256, SAR template 192×192): per-template **CMR@k px** (correct-match rate — one
 `(x, y)` per template, dense zero-reject).
+We use the same geometry and CMR metrics with an independent SEN1-2 draw.
+The headline compares complete pipelines; the four-arm experiment holds the
+matching architecture and training data fixed.
 
 ### In-domain SOTA (SEN1-2, full test set)
 
@@ -167,34 +168,30 @@ thresholds. Full test set = all 7,740 pairs × 289 offsets (≈2.24M positions).
 
 Mean error 1.13 px, median 0 px. `Checkpoint_C_phase2_8gpu/model_epoch_2.pth`.
 
-### Pre-alignment is redundant under fine-tuning (2×2 causal test, 20k)
+### Shared-initialization comparison (Table IV, 20k)
 
-Stage-1 contrastive pre-alignment helps **only when the encoder is frozen**; once the
-encoder is fine-tuned, aligned init (S1/Tr) ≈ random init (R/Tr).
+Values are mean ± sample SD across seeds 2024–2028 after five matching epochs.
+Both S1 arms start from the same symmetric learned-inner-product Stage-1 checkpoint.
 
-| Arm | Init | Stage-2 encoder | CMR(1) | CMR(3) | checkpoint |
-|---|---|---|---|---|---|
-| S1/Tr | Stage-1 aligned | trainable | 68.30 | 86.08 | `Checkpoint_A_ft_256/model_epoch_4.pth` |
-| R/Tr  | random | trainable | 68.28 | 86.35 | `Checkpoint_B_256/model_epoch_4.pth` |
-| S1/Fr | Stage-1 aligned | **frozen** | 68.63 | 86.30 | `Checkpoint_F_s2_frozen_256/model_epoch_4.pth` |
-| R/Fr  | random | **frozen** | 66.94 | 85.17 | `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth` |
+| Arm | CMR(1) ↑ | CMR(3) ↑ | MEE (px) ↓ |
+|---|---|---|---|
+| S1/Tr | 67.86 ± 0.75 | 86.15 ± 0.21 | 3.672 ± 0.052 |
+| R/Tr | 67.84 ± 0.91 | 86.14 ± 0.21 | 3.608 ± 0.058 |
+| S1/Fr | 67.48 ± 0.26 | 86.16 ± 0.22 | 3.666 ± 0.035 |
+| R/Fr | 67.49 ± 1.22 | 85.04 ± 0.29 | 4.069 ± 0.061 |
 
-### Why (mechanism, Sec. IV)
+At the main budget, fully fine-tuned arms have close mean accuracy.
+Pre-alignment improves the frozen arm at 3 px and lowers mean error.
+Supplementary tests show gains with partial freezing and at 500/1,000 source pairs.
+The original single-run comparison is kept separately in [MODELS.md](MODELS.md).
 
-- **Similarity is constructed, not pre-existing.** Raw DINOv3×SAR features localize no
-  better than chance; matching similarity is built inside the projection and is
-  **high-dimensional** — restricting the matcher to the top 22 shared directions drops
-  the GT-hit rate from 0.897 to 0.565 (needs ≳64 directions at stride-4).
-- **Pre-alignment supplies only a low-rank code.** Contrastive alignment saturates at
-  effective rank ≈22 (four independent confirmations; stronger regularization cannot
-  raise it).
-- **Fine-tuning overwrites it.** End-to-end training drives the aligned encoder's
-  effective rank ≈23 → ≈12 (a from-scratch matcher's regime), so the aligned code is
-  overwritten rather than built upon.
+### Representation diagnostics
 
-Reproduce every mechanism number with the probes in
-[`Source/Tools/probes/`](Source/Tools/probes/) (default specimen
-`Checkpoint_B_256/model_epoch_4.pth`).
+The probes test raw cosine localization, paired-content dependence, representation
+change and recovery under feature restriction. Recovery curves describe each fixed
+readout rather than a strict capacity gap. The initialization experiment directly
+tests whether a separate pre-alignment stage improves final matching.
+See [`Source/Tools/probes/`](Source/Tools/probes/) and `probe_common_level.py`.
 
 ### Cross-dataset zero-shot (cascade, no retraining)
 
@@ -205,7 +202,7 @@ coarse tail; OOD robustness *decreases* with training specialization (see
 | Dataset | shift | CMR(3) | high-conf CMR(3) | gross-fail % |
 |---|---|---|---|---|
 | WHU-OPT-SAR | cross-sensor (10 m) | 74.39 | 96.12 | 4.64 |
-| QXS-SAROPT | cross-resolution (1 m) | 10.40 | — | 31.35 |
+| QXS-SAROPT | sensor and resolution (1 m) | 10.40 | 10.80 | 31.35 |
 
 <p align="center"><img src="assets/specialization.png" width="55%" alt="Specialization scissors: in-domain rises, OOD falls"></p>
 
@@ -219,10 +216,12 @@ SAR template (grey) pasted at the **predicted** location; green box = ground tru
 
 ## Pretrained models
 
-The full **key-set** of checkpoints (proposed cascade + the six ablation / Stage-1
-models backing Tables I–VII), together with the frozen DINOv3 backbone, is provided in a
-single Baidu netdisk share. See [`MODELS.md`](MODELS.md) for the per-model manifest (role,
-paper claim, placement).
+The download address is unchanged. The `Weights` folder contains the original
+11 weight files and 66 revision checkpoint files under `Revision_20261107/`.
+[MODELS.md](MODELS.md) gives placement instructions.
+[MODELS_REVISION.md](MODELS_REVISION.md) and the
+[per-file index](docs/checkpoints_revision.csv) map the added weights to the
+current paper tables, figures, seeds and epochs.
 
 > **Download — Baidu netdisk / 百度网盘:**
 > <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> — extraction code: `ug7r`
@@ -236,13 +235,14 @@ The shared `Weights` folder contains everything:
 | `Checkpoint_A_ft_256/`, `Checkpoint_B_256/` | 178 MB ea. | S1/Tr (A-ft), R/Tr (B) trainable arms |
 | `Checkpoint_F_s2_frozen_256/`, `Checkpoint_RF_s2_frozen_256/` | 102 MB ea. | S1/Fr, R/Fr frozen arms |
 | `Checkpoint_A_stage1_256/`, `Checkpoint_F_stage1_256/` | 76 / 80 MB | Stage-1 aligned (A) and learned-IP (F) encoders |
+| `Revision_20261107/` | 66 checkpoint files | Shared-initialization runs, early epochs, reduced budgets, partial freezing, few-pair and upsampling controls |
 
 **Placement:** put the backbone at `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`
 (the path every `config.yaml` resolves as `${root_path}/Weights/...`), and the
 `Checkpoint_*/` directories at the **project root** next to `Source/`:
 
 ```bash
-bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
+bash Scripts/reproduce/eval_cascade.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth 0
 ```
 
 ### Which checkpoint goes with which launcher
@@ -262,10 +262,10 @@ it can live anywhere.
 | `Checkpoint_F_stage1_256/model_epoch_9.pth`<br>Stage-1 learned-IP | `start_train_stage1_256_F.sh` | consumed as the Stage-1 warm-start by `run_frozen_arms_F.sh` (`S1=` line) | **by name** |
 | `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`<br>frozen backbone | — (public Meta weights) | every variant, via `${root_path}/Weights/...` in each `config.yaml` | **by name** |
 
-Only the cascade is purely path-driven; **everything else must keep its directory name.**
-The released cascade dir is `Checkpoint_C_phase2_8gpu/` (named after the run that produced
-it) while training from scratch writes `Checkpoint_C_direct_{sub40,full}_256/` — both are
-fine because they are passed as an argument.
+The portable `tm_eval` helper accepts checkpoint paths for every model.
+Legacy launchers and the four-arm launcher use their listed directory names.
+Keep those names when using those entry points, or pass an explicit checkpoint
+to the shared helper.
 
 > **The launchers are not portable as shipped** — see
 > [Paths you must edit](#paths-you-must-edit) before running any of them.
@@ -286,8 +286,8 @@ Inference only; nothing is trained and no checkpoint is modified.
 export TM_EVAL_CSV=/path/to/image_test_2k_256.csv
 
 bash Scripts/reproduce/eval_cascade.sh                  # Table I  — proposed cascade
-bash Scripts/reproduce/eval_arms.sh 0                   # Table II — 2x2 pre-alignment test
-bash Scripts/reproduce/eval_cross_dataset.sh            # Table III— zero-shot transfer
+bash Scripts/reproduce/eval_arms.sh 0                   # Table III — submitted single-run test
+bash Scripts/reproduce/eval_cross_dataset.sh            # Table VII — zero-shot transfer
 ```
 
 Verified on an RTX 4080 with the released cascade on the 2k eval set:
@@ -315,14 +315,13 @@ reproduce the 2x2 causal test — the proposed method does not use Stage-1 at al
 
 ## Installation
 
-> **No `requirements.txt` / `environment.yml` / `setup.py` ships in this repo.** The
-> dependency set below is reconstructed from imports and from the launch scripts (all
-> of which target a conda env named **`stereoA`** on the training server). Versions are
-> not pinned here — install into a recent PyTorch 2.x environment.
+Training dependencies are listed below. Use a Python 3.11 / PyTorch 2.x environment
+with the CUDA build matching your system. The separate
+`tests/requirements-cpu.txt` pins the dependencies for the lightweight CPU checks.
 
 ```bash
 # 1. Clone with the DINOv3 submodule (frozen optical backbone).
-git clone --recurse-submodules <this-repo-url>
+git clone --recurse-submodules https://github.com/Archaic-Atom/Template-Matching-DINOv3.git
 cd Template-Matching-DINOv3
 # SSH-less? The submodule URL is git@github.com:facebookresearch/dinov3.git;
 # rewrite it to https://github.com/facebookresearch/dinov3.git if you lack SSH keys.
@@ -332,12 +331,13 @@ git clone https://github.com/Archaic-Atom/JackFramework.git
 cd JackFramework && ./install.sh && cd ..
 
 # 3. Install FeatUp (REQUIRED — external dependency, not a submodule).
-#    The JBU upsamplers (every current variant uses them) import
+#    The JBU variants import
 #    `featup.upsamplers.JBULearnedRange`. Install from facebookresearch/FeatUp.
 
 # 4. Other Python deps (into the same env):
-#    torch, torchvision, numpy, pandas, Pillow, webdataset
-#    (webdataset is required for the iterable training path).
+#    torch, torchvision, numpy, pandas, pyarrow, Pillow, webdataset
+#    (webdataset is required for iterable training; pyarrow is required by
+#    the CSV-based evaluation loader.)
 
 # 5. Place the DINOv3 satellite-pretrained weights under Weights/ (gitignored):
 #    Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth   (DINOv3 ViT-L/16, ~1.2 GB)
@@ -416,7 +416,7 @@ scene leakage). Offsets multiply the pairs: **TEST** uses a dense stride-4 grid
 
 ```bash
 # Generate test split first (fast), then train split (nohup-friendly wrapper):
-bash Scripts/run_gen_opt256_sar192.sh
+bash Scripts/legacy/run_gen_opt256_sar192.sh
 # or directly:
 python Scripts/make_opt256_sar192_shards.py --split test  --workers 16
 python Scripts/make_opt256_sar192_shards.py --split train --workers 16
@@ -446,14 +446,14 @@ code):
 | `sarptical`   | SARptical (TerraSAR-X + aerial) | 1 m → 10 m | cross-sensor (aux) |
 
 ```bash
-bash Scripts/run_regen_cross_256.sh     # regen WHU + QXS at 256/192
+bash Scripts/legacy/run_regen_cross_256.sh     # regen WHU + QXS at 256/192
 ```
 
 Each run writes `sar/`, `rgb/`, a `manifest.pt` (for `Scripts/pack_to_webdataset.py`), a
 `cross_eval.csv` (`SAR_Image,RGB_Image,Label` — same schema as the in-domain map-style
 eval CSV, directly consumable by `--mode test`), and a `meta.json` provenance file. A
 `--target_res_m` flag (downsample-only, guarded) drives a controlled GSD sweep
-(`Scripts/run_whu_res_sweep.sh`).
+(`Scripts/legacy/run_whu_res_sweep.sh`).
 
 ### Manifest CSV formats (do not confuse them)
 
@@ -503,22 +503,22 @@ has two flag families: a small set of **project flags** (e.g. `--is_stage_2`,
 
 `TM_Model_C` is direct-trained (random SAR init, no Stage-1, SAR encoder trained
 jointly with the cascade). The scientific run is **two phases**, both via
-`Scripts/run_train_C_direct.sh`:
+`Scripts/legacy/run_train_C_direct.sh`:
 
 ```bash
 # Phase 1 — subset warm-start (subset40 manifest ~1.34M, 4-GPU DDP, bs10, 5 epochs).
-bash Scripts/run_train_C_direct.sh sub40
+bash Scripts/legacy/run_train_C_direct.sh sub40
 
 # Phase 2 — full set ×3 epochs, warm-started from the Phase-1 checkpoint.
 # Internally: strip_stage1_opt.py drops optimizer state + resets epoch=-1 so JF
 # starts cleanly at epoch 0, then pins it via a hand-written checkpoint.list.
-bash Scripts/run_train_C_direct.sh full_resume Checkpoint_C_direct_sub40_256/model_epoch_4.pth
+bash Scripts/legacy/run_train_C_direct.sh full_resume Checkpoint_C_direct_sub40_256/model_epoch_4.pth
 ```
 
-`Scripts/chain_to_phase2.sh` automates the handoff (polls until Phase 1 exits, verifies
+`Scripts/legacy/chain_to_phase2.sh` automates the handoff (polls until Phase 1 exits, verifies
 `model_epoch_4.pth`, waits for the GPUs to free, then launches Phase 2 under `nohup` so
 it survives an SSH drop). An alternative one-shot launcher,
-`Scripts/run_train_C_direct_full.sh`, skips the subset phase (modes `smoke` / `mem N` /
+`Scripts/legacy/run_train_C_direct_full.sh`, skips the subset phase (modes `smoke` / `mem N` /
 `full N`).
 
 > Note: `run_train_C_direct.sh full_resume` runs **3** epochs while
@@ -529,7 +529,7 @@ it survives an SSH drop). An alternative one-shot launcher,
 **Always smoke-test single-GPU first** (`--dist False` surfaces real tracebacks):
 
 ```bash
-bash Scripts/run_train_C_direct.sh smoke
+bash Scripts/legacy/run_train_C_direct.sh smoke
 ```
 
 The literal flags emitted by `run_train_C_direct.sh` (substitute your own python /
@@ -552,11 +552,11 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python -u Source/main.py \
 
 ### Other variants / ablations (256/192 launchers)
 
-- `Scripts/run_a_ft_vs_b.sh` — the clean "does Stage-1 init help" ablation: A-ft
+- `Scripts/legacy/run_a_ft_vs_b.sh` — the clean "does Stage-1 init help" ablation: A-ft
   (warm-started, trainable SAR) vs B (random SAR), only the SAR init differs.
-- `Scripts/start_train_stage1_256_A.sh` / `start_train_stage1_256_F.sh` — Stage-1
+- `Scripts/legacy/start_train_stage1_256_A.sh` / `start_train_stage1_256_F.sh` — Stage-1
   contrastive pre-alignment (A) and learned-inner-product/VICReg pre-alignment (F).
-- `Scripts/run_frozen_arms_F.sh` / `run_frozen_arms_F_seed.sh` — the frozen-encoder
+- `Scripts/legacy/run_frozen_arms_F.sh` / `run_frozen_arms_F_seed.sh` — the frozen-encoder
   double-arms experiment (and its multi-seed replicate).
 
 > The `Scripts/start_train_stage2_{A..E}_wds.sh` launchers and everything under
@@ -588,22 +588,22 @@ writes a 2-line `checkpoint.list`, and runs at batch 1 with `TM_SEED=2024` +
 
 ```bash
 # In-domain 2k (proposed cascade, hard argmax):
-bash Scripts/run_eval_C_2k.sh <src_ckpt.pth> <tag> [gpu]
+bash Scripts/legacy/run_eval_C_2k.sh <src_ckpt.pth> <tag> [gpu]
 
 # Cascade + sub-pixel (E), evaluated on a C checkpoint:
-bash Scripts/run_eval_E_2k.sh <C_ckpt.pth> <tag> [gpu]
+bash Scripts/legacy/run_eval_E_2k.sh <C_ckpt.pth> <tag> [gpu]
 
 # Standard-head variants A / B / D:
-bash Scripts/run_eval_std_2k.sh <TM_Model_A|B|D> <src_ckpt.pth> <tag> [gpu] [port]
+bash Scripts/legacy/run_eval_std_2k.sh <TM_Model_A|B|D> <src_ckpt.pth> <tag> [gpu] [port]
 
 # Larger in-domain eval sets (10k / 20k) and frozen-arms full pipeline:
-bash Scripts/run_eval_B_256_10k.sh
-bash Scripts/run_eval_A_256_10k.sh
-bash Scripts/run_eval_frozen_full.sh [FEPOCH] [EVAL_CSV] [EVAL_N] [TAG]
+bash Scripts/legacy/run_eval_B_256_10k.sh
+bash Scripts/legacy/run_eval_A_256_10k.sh
+bash Scripts/legacy/run_eval_frozen_full.sh [FEPOCH] [EVAL_CSV] [EVAL_N] [TAG]
 
 # Cross-dataset zero-shot (WHU cross-sensor, QXS cross-resolution):
-bash Scripts/run_eval_whu_matched.sh [CSV] [N] [TAG]
-bash Scripts/run_whu_res_sweep.sh      # controlled GSD sweep (PCK vs GSD)
+bash Scripts/legacy/run_eval_whu_matched.sh [CSV] [N] [TAG]
+bash Scripts/legacy/run_whu_res_sweep.sh      # controlled GSD sweep (PCK vs GSD)
 ```
 
 `--mode test` writes per-rank temp CSVs that rank-0 merges into
@@ -701,3 +701,14 @@ the upstream repository.
 > **TODO:** the `LICENSE` file currently reads `Copyright (c) 2018 BeautyOfWeb`, which
 > appears to be an inherited template artifact rather than this project's authors — the
 > copyright line likely needs correcting.
+
+## CPU checks
+
+These checks require neither CUDA nor downloaded model weights. They cover
+bilinear projection, cascade outputs, correlation layout, variant configuration
+differences and queue isolation. They do not run training.
+
+```bash
+python -m unittest discover -s tests -v
+python Scripts/autodl/test_review_overlap_20261027.py
+```

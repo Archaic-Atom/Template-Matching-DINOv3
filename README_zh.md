@@ -1,6 +1,6 @@
 # Template-Matching-DINOv3 (DOSR-Net) · 中文文档
 
-![Python](https://img.shields.io/badge/python-%3E=3.8-green.svg?style=plastic)
+![Python](https://img.shields.io/badge/python-3.11-green.svg?style=plastic)
 ![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=plastic)
 ![License MIT](https://img.shields.io/badge/license-MIT-green.svg?style=plastic)
 
@@ -15,15 +15,13 @@
 <p align="center"><img src="assets/pipeline.png" width="100%" alt="DOSR-Net pipeline"></p>
 
 > **论文（IEEE TGRS 2026）：** *Rethinking SAR–Optical Pre-Alignment with
-> Foundation Models for Template Matching.* 核心发现：可用的跨模态相似性并**不预先存在**
-> 于编码器中——它是在任务专属的匹配投影里**被构造**出来的，且是高维的（需要 ≳64 个方向）；
-> 而对比式预对齐只能提供一个低秩（≈22）的编码，会被端到端微调**覆盖**。因此一个不带预对齐
-> 阶段、直接训练的级联即可达到 SOTA。见 [实验结果](#实验结果)。
+> Foundation Models for Template Matching.* 匹配模块构造可用的跨模态分数，原始特征空间仍有差异。
+> 在主预算和完整 SAR 编码器微调下，五 seed 的预对齐与随机初始化结果均值接近。
+> 预对齐在冻结编码器及部分冻结、少量数据的一些设置下有收益。
+> 直接训练级联在 SEN1-2 全测试集达到 CMR(1/3) 93.30/95.83。
 
-仓库以**分析驱动的消融模型族 `TM_Model_A..F`** 组织，主方法（提出的模型）是
-**`TM_Model_C`**——一个直接训练的级联匹配头。论文的一个结论是：对 SAR 编码器做
-对比式 Stage-1 *预对齐*，相比直接训练**并不会**提升域内匹配效果；多个变体的存在
-正是为了量化这一点（见[模型变体](#模型变体)）。
+模型族包含 `TM_Model_A..G`、`TM_Model_CB` 和 `TM_Model_CW`。
+主方法为 `TM_Model_C`。其他变体用于检查初始化、编码器可训练性、光学 provider 和粗尺度上采样。
 
 > 面向开发者的权威详解（入口链路、config-vs-CLI 优先级、dataloader 约定、级联头内部
 > 结构、已知坑点清单）请见 **[`CODE_STRUCTURE.md`](CODE_STRUCTURE.md)**。本文档是
@@ -48,12 +46,12 @@
 - **JackFramework + WebDataset 训练。**面向约 1320 万样本训练集的可迭代
   WebDataset 分片管线，含自定义的 DDP 均衡分片切分、大样本 shuffle 缓冲，以及
   评测用的 map-style 后端。
-- **`TM_Model_A..F` 消融族**，分别隔离 Stage-1 预对齐作为初始化、级联 vs 标准细化头、
+- **`TM_Model_A..G`、`CB`、`CW` 消融族**，分别隔离 Stage-1 预对齐作为初始化、级联 vs 标准细化头、
   亚像素解码、以及一个 learned-inner-product（VICReg）探针。
 - **跨数据集零样本评测**适配器：**WHU-OPT-SAR**（跨传感器）、**QXS-SAROPT**
   （跨分辨率），外加可控的 GSD 扫描工具。
 - **分析 / 探针工具**（`Source/Tools/`、`Source/Tools/probes/`），产出论文分析部分的
-  机理数字（相似性存在于何处、对照实验组、有效秩轨迹、oracle 上界等）。
+  机理数字（相似性存在于何处、对照实验组、按读出定义的恢复曲线、CKA 与定位对照等）。
 
 ---
 
@@ -69,10 +67,10 @@ Template-Matching-DINOv3/
 │   │   ├── user_interface.py      # CLI 接口 + dataset/model zoo 分发
 │   │   ├── user_define.py         # ROOT_PATH / DINOv3 仓库 + 权重路径常量
 │   │   ├── Models/
-│   │   │   ├── __init__.py        # model_zoo：TM_Model_A..F → 接口类
+│   │   │   ├── __init__.py        # model_zoo：A..G、CB、CW → 接口类
 │   │   │   ├── builder.py         # YAML → ComposedTM 组装
 │   │   │   ├── _interface_base.py # 通用 JackFramework 模型 handler
-│   │   │   ├── TM_Model_{A..F}/   # 各变体 config.yaml（+ 极薄 __init__.py）
+│   │   │   ├── TM_Model_{A..G,CB,CW}/   # 各变体 config.yaml（+ 极薄 __init__.py）
 │   │   │   ├── _components/        # 骨干、JBU、匹配头、损失、解码
 │   │   │   └── _legacy/legacy_A/   # A 的原始手写实现（仅供参考）
 │   │   └── Dataloaders/            # TMDataloader（map-style + WebDataset 双后端）
@@ -83,7 +81,7 @@ Template-Matching-DINOv3/
 │   ├── train/                      # ② 自己训练，然后测试
 │   ├── legacy/                     # 原始的逐实验启动脚本（含服务器路径）
 │   └── legacy_128_64/              # 已弃用的 128/64 几何脚本
-├── Datasets/                       # 仅一个过时示例被跟踪；真实清单在服务器上
+├── Datasets/                       # CSV 清单示例；图像数据另行下载
 ├── Weights/                        # DINOv3 权重（已 gitignore，需单独下载）
 ├── assets/                         # README 配图（pipeline、定性结果等）
 ├── MODELS.md                       # 预训练模型清单（下载 + 放置）
@@ -97,11 +95,9 @@ Template-Matching-DINOv3/
 
 ## 模型变体
 
-六个变体共享**相同骨干**（冻结 DINOv3 ViT-L/16 + `SarResNet16GN`）、**相同的
-stride-4 + stride-8 JBU 粗匹配**、以及 **256/192 几何**（`matching_dim = 256`、
-`sar_size = 192`）。每个 `TM_Model_X/` 都是只设置 `CONFIG_PATH` 的极薄
-`ComponentBasedInterface` 子类，行为全在其 `config.yaml`。变体在三个维度上不同：
-**Stage-1 目标**、**Stage-2 是否冻结 SAR 编码器**、**细化/解码头**。
+各变体使用冻结的 DINOv3 光学特征、`SarResNet16GN` SAR 编码器和 256/192 几何。
+`CB` 将粗尺度 JBU 换为双线性上采样，`CW` 更换光学 provider，`G` 用于共享初始化对照的可训练臂。
+每个变体通过自己的 `config.yaml` 配置。
 
 | 变体 | 匹配头 | Stage-1（`load_pretrained_sar`） | Stage-2 SAR（`freeze_sar_encoder`） | Stage-2 损失 | 解码 | 隔离的因素 |
 |---|---|---|---|---|---|---|
@@ -111,6 +107,9 @@ stride-4 + stride-8 JBU 粗匹配**、以及 **256/192 几何**（`matching_dim 
 | **D** | `StandardMatchingHeadJBU` | `true` | `true`（冻结） | `two_stage_matching_loss` | `soft_subpixel` | A 头上加亚像素解码（复用 A 权重，仅评测） |
 | **E** | `CascadeHeadJBU` | `true` * | `true` * | `cascade_loss` | `soft_subpixel` | 级联 + 亚像素；**在 C 的权重上评测** |
 | **F** | `StandardMatchingHeadJBU`（Stage-1 加 `AlignmentIPHead`） | `true` | `true`（冻结） | `two_stage_matching_loss` | hard argmax | learned-inner-product Stage-1（W_s/W_d + VICReg 秩下限）+ 冻结编码器 Stage-2 |
+| **G** | `StandardMatchingHeadJBU` | 共享 Stage-1 或随机初始化 | `false` | `two_stage_matching_loss` | hard argmax | 共享初始化四臂实验的可训练行 |
+| **CB** | `CascadeHeadBilinear` | `false` | `false` | `cascade_loss` | hard argmax | 只将粗尺度 stride-16-to-4/8 JBU 换为双线性 |
+| **CW** | `CascadeHeadJBU` | `false` | `false` | `cascade_loss` | hard argmax | 使用 web 预训练的 LVD-1689M provider |
 
 **权重复用：**D 复用 A 的权重、E 复用 C 的权重——两者只在评测期改动 `argmax_type`
 （亚像素），并保持 `matching.args` 逐字节一致以便 state_dict 对齐。注意只有
@@ -125,9 +124,9 @@ stride-4 + stride-8 JBU 粗匹配**、以及 **256/192 几何**（`matching_dim 
 > 并不能复现 C。请把 E 理解为“C 的架构 + 亚像素解码、在 C 权重上评测”；若要按 E 自己的
 > 配置训练，请先与作者确认意图。
 
-成对对比：**A vs B** 隔离 Stage-1 作为初始化；**C vs B** 隔离级联 vs 标准细化头；
-**A vs D**、**C vs E** 隔离亚像素解码；**F** 隔离一个受保护的强 Stage-1 目标。2×2 的
-“frozen-arms”因果实验（初始化 × 冻结）见 [`CODE_STRUCTURE.md §7`](CODE_STRUCTURE.md)。
+修订后的四臂实验由 F 实现冻结臂，G 实现可训练臂。
+两个预对齐臂使用同一 Stage-1 checkpoint。C/CB 对照保留两侧细尺度可学习上采样和 raw stem。
+原 A/B/F 单次结果单独保留。
 
 ---
 
@@ -135,6 +134,8 @@ stride-4 + stride-8 JBU 粗匹配**、以及 **256/192 几何**（`matching_dim 
 
 所有数字均遵循 **ME-SSM 评测协议**（SEN1-2，光学参考 256×256、SAR 模板 192×192）：
 逐模板 **CMR@k px**（像素阈值下的正确匹配率——每个模板一个 `(x, y)`，稠密零拒绝）。
+采用相同几何和 CMR 指标，SEN1-2 按同一协议独立抽样。主表比较完整系统，
+四臂实验则固定匹配架构和训练数据。
 
 ### 域内 SOTA（SEN1-2 全测试集）
 
@@ -150,30 +151,29 @@ stride-4 + stride-8 JBU 粗匹配**、以及 **256/192 几何**（`matching_dim 
 
 平均误差 1.13 px，中位数 0 px。`Checkpoint_C_phase2_8gpu/model_epoch_2.pth`。
 
-### 微调下预对齐是冗余的（2×2 因果实验，20k）
+### 共享初始化比较（表 IV，20k）
 
-Stage-1 对比式预对齐**仅在编码器冻结时**有益；一旦编码器参与微调，对齐初始化（S1/Tr）
-≈ 随机初始化（R/Tr）。
+下表为五轮匹配训练后、seeds 2024–2028 的均值 ± 样本标准差。
+两个 S1 臂均从同一份对称 learned-inner-product Stage-1 权重开始。
 
-| 臂 | 初始化 | Stage-2 编码器 | CMR(1) | CMR(3) | 权重 |
-|---|---|---|---|---|---|
-| S1/Tr | Stage-1 对齐 | 可训 | 68.30 | 86.08 | `Checkpoint_A_ft_256/model_epoch_4.pth` |
-| R/Tr  | 随机 | 可训 | 68.28 | 86.35 | `Checkpoint_B_256/model_epoch_4.pth` |
-| S1/Fr | Stage-1 对齐 | **冻结** | 68.63 | 86.30 | `Checkpoint_F_s2_frozen_256/model_epoch_4.pth` |
-| R/Fr  | 随机 | **冻结** | 66.94 | 85.17 | `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth` |
+| Arm | CMR(1) ↑ | CMR(3) ↑ | MEE (px) ↓ |
+|---|---|---|---|
+| S1/Tr | 67.86 ± 0.75 | 86.15 ± 0.21 | 3.672 ± 0.052 |
+| R/Tr | 67.84 ± 0.91 | 86.14 ± 0.21 | 3.608 ± 0.058 |
+| S1/Fr | 67.48 ± 0.26 | 86.16 ± 0.22 | 3.666 ± 0.035 |
+| R/Fr | 67.49 ± 1.22 | 85.04 ± 0.29 | 4.069 ± 0.061 |
 
-### 机理（为什么，见论文第 IV 节）
+在主预算下，完整微调的两个臂准确率均值接近。
+冻结编码器时，预对齐提高 3px 准确率并降低平均误差。
+部分冻结及 500/1000 对源图像的补充实验也有收益。
+原单次结果单独列在 [MODELS.md](MODELS.md)。
 
-- **相似性是被构造的，而非预先存在。** DINOv3×SAR 的原始特征定位不比随机好；匹配相似性
-  是在投影中构造出来的，且**高维**——把匹配器限制到前 22 个共享方向，GT 命中率从 0.897
-  掉到 0.565（stride-4 下需要 ≳64 个方向）。
-- **预对齐只提供低秩编码。** 对比式对齐在有效秩 ≈22 处饱和（四项独立证据；加强正则也
-  抬不上去）。
-- **微调会覆盖它。** 端到端训练把对齐编码器的有效秩从 ≈23 压到 ≈12（即从零训练匹配器的
-  水平），对齐编码是被覆盖而非被继承。
+### 表征诊断
 
-用 [`Source/Tools/probes/`](Source/Tools/probes/) 中的探针可复现全部机理数字
-（默认被试 `Checkpoint_B_256/model_epoch_4.pth`）。
+探针检查原始余弦定位、配对内容依赖、表示变化和子空间限制后的恢复。
+恢复曲线按固定读出解释，不再使用严格的容量差推断。
+初始化对照直接检验额外预对齐阶段对最终匹配效果的作用。
+代码见 [`Source/Tools/probes/`](Source/Tools/probes/) 和 `probe_common_level.py`。
 
 ### 跨数据集零样本（级联，无需重训）
 
@@ -183,7 +183,7 @@ Stage-1 对比式预对齐**仅在编码器冻结时**有益；一旦编码器�
 | 数据集 | 迁移类型 | CMR(3) | 高置信 CMR(3) | 大误差失败 % |
 |---|---|---|---|---|
 | WHU-OPT-SAR | 跨传感器（10 m） | 74.39 | 96.12 | 4.64 |
-| QXS-SAROPT | 跨分辨率（1 m） | 10.40 | — | 31.35 |
+| QXS-SAROPT | 传感器与分辨率变化（1 m） | 10.40 | 10.80 | 31.35 |
 
 <p align="center"><img src="assets/specialization.png" width="55%" alt="专门化剪刀图：域内上升、OOD 下降"></p>
 
@@ -197,9 +197,10 @@ SAR 模板（灰）贴在**预测**位置；绿框 = 真值。
 
 ## 预训练模型
 
-完整的**关键集** checkpoint（提出的级联 + 支撑表 I–VII 的六个消融/Stage-1 模型），连同冻结的
-DINOv3 骨干，统一放在一个百度网盘分享里。每个模型的用途/支撑结论/放置位置见
-[`MODELS.md`](MODELS.md)。
+下载地址保持不变。`Weights` 文件夹保留原 11 个权重文件，
+并在 `Revision_20261107/` 中增加 66 个返修 checkpoint。
+放置方式见 [MODELS.md](MODELS.md)；当前论文表格、图片、seed、epoch 的对应关系见
+[MODELS_REVISION.md](MODELS_REVISION.md) 和[逐文件索引](docs/checkpoints_revision.csv)。
 
 > **下载（百度网盘）：**
 > <https://pan.baidu.com/s/1lhXTqkXKwzg5H9PVtt01EQ?pwd=ug7r> ——提取码：`ug7r`
@@ -213,13 +214,14 @@ DINOv3 骨干，统一放在一个百度网盘分享里。每个模型的用途/
 | `Checkpoint_A_ft_256/`、`Checkpoint_B_256/` | 各 178 MB | S1/Tr（A-ft）、R/Tr（B）可训臂 |
 | `Checkpoint_F_s2_frozen_256/`、`Checkpoint_RF_s2_frozen_256/` | 各 102 MB | S1/Fr、R/Fr 冻结臂 |
 | `Checkpoint_A_stage1_256/`、`Checkpoint_F_stage1_256/` | 76 / 80 MB | Stage-1 对齐（A）与 learned-IP（F）编码器 |
+| `Revision_20261107/` | 66 个 checkpoint 文件 | 共享初始化、早期轮次、预算、部分冻结、少数据与上采样对照 |
 
 **放置：**骨干放到 `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`（每个 `config.yaml`
 都按 `${root_path}/Weights/...` 解析这个路径）；各 `Checkpoint_*/` 目录放到**项目根目录**、
 与 `Source/` 同级：
 
 ```bash
-bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
+bash Scripts/reproduce/eval_cascade.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth 0
 ```
 
 ### 哪个权重配哪个脚本
@@ -238,9 +240,8 @@ bash Scripts/run_eval_C_2k.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pth c_ep2 0
 | `Checkpoint_F_stage1_256/model_epoch_9.pth`<br>Stage-1 learned-IP | `start_train_stage1_256_F.sh` | 作为 Stage-1 热启动被 `run_frozen_arms_F.sh`（`S1=` 行）取用 | **按名字** |
 | `Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`<br>冻结骨干 | ——（公开 Meta 权重） | 所有变体，经各 `config.yaml` 的 `${root_path}/Weights/...` | **按名字** |
 
-只有级联是纯按路径传的，**其余全部必须保留原目录名**。发布的级联目录是
-`Checkpoint_C_phase2_8gpu/`（沿用产出它那次训练的名字），从头训练写出的则是
-`Checkpoint_C_direct_{sub40,full}_256/`——两者都作参数传入，所以都能用。
+通用 `tm_eval` 接受各模型的 checkpoint 路径。旧版脚本和四臂启动脚本使用表中目录名；
+使用这些入口时保留原名，或通过通用 helper 显式传入权重路径。
 
 > **脚本按原样并不可移植**——运行任何脚本前请先看[需要修改的路径](#需要修改的路径)。
 
@@ -292,7 +293,7 @@ bash Scripts/train/train_cascade.sh phase2 Checkpoint_C_direct_sub40_256/model_e
 
 ```bash
 # 1. 连同 DINOv3 子模块一起克隆（冻结光学骨干）。
-git clone --recurse-submodules <this-repo-url>
+git clone --recurse-submodules https://github.com/Archaic-Atom/Template-Matching-DINOv3.git
 cd Template-Matching-DINOv3
 # 没有 SSH 密钥？子模块 URL 是 git@github.com:facebookresearch/dinov3.git，
 # 可改写为 https://github.com/facebookresearch/dinov3.git。
@@ -306,8 +307,8 @@ cd JackFramework && ./install.sh && cd ..
 #    `featup.upsamplers.JBULearnedRange`。从 facebookresearch/FeatUp 安装。
 
 # 4. 其它 Python 依赖（装入同一环境）：
-#    torch, torchvision, numpy, pandas, Pillow, webdataset
-#    （可迭代训练路径需要 webdataset）。
+#    torch, torchvision, numpy, pandas, pyarrow, Pillow, webdataset
+#    （可迭代训练需要 webdataset；CSV 评测读取需要 pyarrow）。
 
 # 5. 把 DINOv3 卫星预训练权重放到 Weights/（已 gitignore）：
 #    Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth   （DINOv3 ViT-L/16，约 1.2 GB）
@@ -379,7 +380,7 @@ grep -nE "^(PROJ|PY|MANIFEST|CSV|EVAL_CSV|RAW|OUTBASE)=|/data[0-9]*/" Scripts/<s
 
 ```bash
 # 先造 test（快），再造 train（适合 nohup 的封装脚本）：
-bash Scripts/run_gen_opt256_sar192.sh
+bash Scripts/legacy/run_gen_opt256_sar192.sh
 # 或直接：
 python Scripts/make_opt256_sar192_shards.py --split test  --workers 16
 python Scripts/make_opt256_sar192_shards.py --split train --workers 16
@@ -407,13 +408,13 @@ docstring 仍写“64/128”——那是过时文字，以代码为准）：
 | `sarptical`   | SARptical（TerraSAR-X + 航拍） | 1 m → 10 m | 跨传感器（辅助） |
 
 ```bash
-bash Scripts/run_regen_cross_256.sh     # 在 256/192 下重造 WHU + QXS
+bash Scripts/legacy/run_regen_cross_256.sh     # 在 256/192 下重造 WHU + QXS
 ```
 
 每次运行写出 `sar/`、`rgb/`、一个 `manifest.pt`（供 `Scripts/pack_to_webdataset.py` 使用）、
 一个 `cross_eval.csv`（`SAR_Image,RGB_Image,Label`，与域内 map-style 评测 CSV 同 schema，
 可直接被 `--mode test` 消费），以及一个 `meta.json` 溯源文件。`--target_res_m`
-（仅下采样、有保护）驱动可控 GSD 扫描（`Scripts/run_whu_res_sweep.sh`）。
+（仅下采样、有保护）驱动可控 GSD 扫描（`Scripts/legacy/run_whu_res_sweep.sh`）。
 
 ### 清单 CSV 格式（切勿混淆）
 
@@ -456,21 +457,21 @@ bash Scripts/run_regen_cross_256.sh     # 在 256/192 下重造 WHU + QXS
 ### 提出的方法（`TM_Model_C`）——两阶段流程
 
 `TM_Model_C` 直接训练（随机 SAR 初始化、无 Stage-1、SAR 编码器与级联联合训练）。科学
-运行分**两阶段**，均通过 `Scripts/run_train_C_direct.sh`：
+运行分**两阶段**，均通过 `Scripts/legacy/run_train_C_direct.sh`：
 
 ```bash
 # 阶段一 —— 子集热启动（subset40 清单 ~1.34M，4 卡 DDP，bs10，5 epoch）。
-bash Scripts/run_train_C_direct.sh sub40
+bash Scripts/legacy/run_train_C_direct.sh sub40
 
 # 阶段二 —— 全量 ×3 epoch，从阶段一 checkpoint 热启动。
 # 内部：strip_stage1_opt.py 丢掉优化器状态并把 epoch 重置为 -1，使 JF 从干净的
 # epoch 0 开始，再用手写的 checkpoint.list 固定它。
-bash Scripts/run_train_C_direct.sh full_resume Checkpoint_C_direct_sub40_256/model_epoch_4.pth
+bash Scripts/legacy/run_train_C_direct.sh full_resume Checkpoint_C_direct_sub40_256/model_epoch_4.pth
 ```
 
-`Scripts/chain_to_phase2.sh` 自动衔接（轮询直到阶段一退出，确认 `model_epoch_4.pth`
+`Scripts/legacy/chain_to_phase2.sh` 自动衔接（轮询直到阶段一退出，确认 `model_epoch_4.pth`
 存在，等 GPU 释放后在 `nohup` 下启动阶段二，可扛 SSH 断连）。另一个一次性脚本
-`Scripts/run_train_C_direct_full.sh` 跳过子集阶段（模式 `smoke` / `mem N` / `full N`）。
+`Scripts/legacy/run_train_C_direct_full.sh` 跳过子集阶段（模式 `smoke` / `mem N` / `full N`）。
 
 > 注意：`run_train_C_direct.sh full_resume` 跑 **3** 个 epoch，而
 > `run_train_C_direct_full.sh full` 跑 **5** 个，两者都写到
@@ -480,7 +481,7 @@ bash Scripts/run_train_C_direct.sh full_resume Checkpoint_C_direct_sub40_256/mod
 **务必先做单卡 smoke 测试**（`--dist False` 才能看到真实 traceback）：
 
 ```bash
-bash Scripts/run_train_C_direct.sh smoke
+bash Scripts/legacy/run_train_C_direct.sh smoke
 ```
 
 `run_train_C_direct.sh` 实际发出的命令（请替换为你自己的 python / 项目根 / 路径）：
@@ -502,11 +503,11 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python -u Source/main.py \
 
 ### 其它变体 / 消融（256/192 脚本）
 
-- `Scripts/run_a_ft_vs_b.sh` —— 干净的“Stage-1 初始化是否有帮助”消融：A-ft（热启动、
+- `Scripts/legacy/run_a_ft_vs_b.sh` —— 干净的“Stage-1 初始化是否有帮助”消融：A-ft（热启动、
   SAR 可训）vs B（随机 SAR），唯一差别是 SAR 初始化。
-- `Scripts/start_train_stage1_256_A.sh` / `start_train_stage1_256_F.sh` —— Stage-1
+- `Scripts/legacy/start_train_stage1_256_A.sh` / `start_train_stage1_256_F.sh` —— Stage-1
   对比式预对齐（A）与 learned-inner-product/VICReg 预对齐（F）。
-- `Scripts/run_frozen_arms_F.sh` / `run_frozen_arms_F_seed.sh` —— 冻结编码器的
+- `Scripts/legacy/run_frozen_arms_F.sh` / `run_frozen_arms_F_seed.sh` —— 冻结编码器的
   双臂实验（及其多种子复现）。
 
 > `Scripts/start_train_stage2_{A..E}_wds.sh` 以及 `Scripts/legacy_128_64/` 里的一切
@@ -533,22 +534,22 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python -u Source/main.py \
 
 ```bash
 # 域内 2k（提出的级联，hard argmax）：
-bash Scripts/run_eval_C_2k.sh <src_ckpt.pth> <tag> [gpu]
+bash Scripts/legacy/run_eval_C_2k.sh <src_ckpt.pth> <tag> [gpu]
 
 # 级联 + 亚像素（E），在 C 的 checkpoint 上评测：
-bash Scripts/run_eval_E_2k.sh <C_ckpt.pth> <tag> [gpu]
+bash Scripts/legacy/run_eval_E_2k.sh <C_ckpt.pth> <tag> [gpu]
 
 # 标准头变体 A / B / D：
-bash Scripts/run_eval_std_2k.sh <TM_Model_A|B|D> <src_ckpt.pth> <tag> [gpu] [port]
+bash Scripts/legacy/run_eval_std_2k.sh <TM_Model_A|B|D> <src_ckpt.pth> <tag> [gpu] [port]
 
 # 更大的域内评测集（10k / 20k）与 frozen-arms 全流程：
-bash Scripts/run_eval_B_256_10k.sh
-bash Scripts/run_eval_A_256_10k.sh
-bash Scripts/run_eval_frozen_full.sh [FEPOCH] [EVAL_CSV] [EVAL_N] [TAG]
+bash Scripts/legacy/run_eval_B_256_10k.sh
+bash Scripts/legacy/run_eval_A_256_10k.sh
+bash Scripts/legacy/run_eval_frozen_full.sh [FEPOCH] [EVAL_CSV] [EVAL_N] [TAG]
 
 # 跨数据集零样本（WHU 跨传感器，QXS 跨分辨率）：
-bash Scripts/run_eval_whu_matched.sh [CSV] [N] [TAG]
-bash Scripts/run_whu_res_sweep.sh      # 可控 GSD 扫描（PCK vs GSD）
+bash Scripts/legacy/run_eval_whu_matched.sh [CSV] [N] [TAG]
+bash Scripts/legacy/run_whu_res_sweep.sh      # 可控 GSD 扫描（PCK vs GSD）
 ```
 
 `--mode test` 写出按 rank 的临时 CSV，由 rank-0 合并为
@@ -638,3 +639,13 @@ MIT，见 [`LICENSE`](LICENSE)。DINOv3 按其自身许可证再分发，详见�
 
 > **TODO：**`LICENSE` 文件当前写的是 `Copyright (c) 2018 BeautyOfWeb`，看起来是继承自
 > 模板的残留，而非本项目作者——版权行可能需要修正。
+
+## CPU 检查
+
+以下检查不需要 CUDA 或下载权重。它们覆盖双线性投影、级联输出、相关运算布局、
+变体配置差异及队列隔离，不启动训练。依赖见 `tests/requirements-cpu.txt`。
+
+```bash
+python -m unittest discover -s tests -v
+python Scripts/autodl/test_review_overlap_20261027.py
+```

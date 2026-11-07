@@ -19,6 +19,23 @@ from .TM_Model_E import TMModelEInterface
 # Stage-2 — the F0 "strong Stage-1, protected" counterfactual (2026-06-11).
 from .TM_Model_F import TMModelFInterface
 
+# TM_Model_G: TM_Model_F with freeze_sar_encoder flipped to false — the ONLY
+# diff. F and G are the factorial control for the revised 2x2 (R2 comment 5a):
+# one model family, one shared Stage-1 ckpt, freeze as a single-line toggle.
+from .TM_Model_G import TMModelGInterface
+
+# TM_Model_CB: TM_Model_C with architecture.matching.type flipped from
+# CascadeHeadJBU to CascadeHeadBilinear — the ONLY diff. The guided-upsampling
+# ablation control (R1 comment 7): same stride-16 1024-d feature source on both
+# modalities, only the coarse ×4/×2 lift kernel changes.
+from .TM_Model_CB import TMModelCBInterface
+
+# TM_Model_CW: TM_Model_C with architecture.rgb_encoder.args.weights_path
+# pointed at the web-pretrained LVD-1689M DINOv3 instead of the
+# satellite-pretrained SAT-493M — the ONLY diff. The provider-corpus
+# ablation control (R1 comment 5).
+from .TM_Model_CW import TMModelCWInterface
+
 
 def _get_model_dict() -> dict:
     return {
@@ -28,6 +45,9 @@ def _get_model_dict() -> dict:
         'TM_Model_D': TMModelDInterface,
         'TM_Model_E': TMModelEInterface,
         'TM_Model_F': TMModelFInterface,
+        'TM_Model_G': TMModelGInterface,
+        'TM_Model_CB': TMModelCBInterface,
+        'TM_Model_CW': TMModelCWInterface,
     }
 
 

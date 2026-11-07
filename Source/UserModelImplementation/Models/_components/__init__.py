@@ -13,7 +13,7 @@ from . import sar_encoder              # noqa: F401  registers SarResNet16GN
 from . import dino_backbone            # noqa: F401  registers DinoV3Backbone
 from . import coarse_matching          # noqa: F401  registers CoarseMatchingHead
 from . import fine_head_simple         # noqa: F401  registers FineFeatureHead
-from . import fine_head_cascade        # noqa: F401  registers CascadeHead, CascadeHeadJBU
+from . import fine_head_cascade        # noqa: F401  registers CascadeHead, CascadeHeadJBU, CascadeHeadBilinear
 from . import sub_pixel                # noqa: F401  registers SubPixelDecoder
 from . import alignment_loss           # noqa: F401  registers alignment_loss, alignment_ip_loss
 from . import alignment_ip_head        # noqa: F401  registers AlignmentIPHead

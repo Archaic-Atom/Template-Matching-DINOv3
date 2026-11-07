@@ -50,3 +50,7 @@ results_archive/
 
 # All pretrained weights
 Weights/
+
+# Local recovery manifests and dated editor backups / 本地恢复清单及编辑备份
+Datasets/_recovered_from_bundle/
+*.bak_*

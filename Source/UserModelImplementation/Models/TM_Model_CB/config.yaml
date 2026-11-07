@@ -1,0 +1,141 @@
+# TM_Model_CB — guided-upsampling ABLATION CONTROL for TM_Model_C.
+#
+# Reviewer 1, comment 7 (TGRS-2026-06939) asks for an ablation of the
+# upsampling module. This variant is the deployed cascade (TM_Model_C) with
+# exactly one substitution: the coarse joint-bilateral guided upsampling
+# (CascadeHeadJBU / ProjMatchJBU) is replaced by plain bilinear interpolation
+# (CascadeHeadBilinear / ProjMatchBilinear). Everything else — feature source
+# (stride-16, 1024-d, both modalities), output stride, matching_dim, geometry,
+# losses, warmups, optimizer, inference decode — is byte-identical to C.
+#
+# 审稿人 1 第 7 条要求做上采样模块的消融。本变体 = 部署版级联（TM_Model_C）+
+# 唯一一处替换：coarse 阶段的联合双边引导上采（CascadeHeadJBU / ProjMatchJBU）
+# 换成纯双线性（CascadeHeadBilinear / ProjMatchBilinear）。其余（特征来源
+# stride-16 1024-d 双边、输出 stride、matching_dim、几何、损失、warmup、
+# 优化器、推理解码）与 C 逐字节一致。
+#
+# THE EVIDENCE IS THE DIFF / 证据就是 diff:
+#
+#     diff TM_Model_C/config.yaml TM_Model_CB/config.yaml
+#
+# It shows this header, `name:`, `description:` and ONE substantive line,
+# `architecture.matching.type`. `name` / `description` are metadata that no
+# code reads (grepped); the type line is the whole experiment.
+# diff 里只有本头注释、`name:`、`description:` 和一行实质改动
+# `architecture.matching.type`。`name`/`description` 没有任何代码读取（已 grep
+# 确认），那一行 type 就是整个实验。
+#
+# Scope caveat for the table caption / 表格 caption 必须写的范围说明:
+# only the COARSE ×4 / ×2 lift is ablated. The cascade's stride-2 and stride-1
+# LearnedUpsamplers (bilinear + 2 convs) and the RawImageStem are unchanged in
+# both arms — this row is NOT "no learned upsampling at all".
+# 只消融了 coarse 的 ×4/×2 上采；级联 stride-2/1 的 LearnedUpsampler 与
+# RawImageStem 两臂相同——这一行不是“完全没有可学习上采样”。
+#
+# NOT parameter-matched: the bilinear arm is 37,398 parameters smaller (the
+# four dropped JBULearnedRange stacks). Report both counts — run
+# `python Source/Tools/count_upsampler_params.py`.
+# 未做参数对齐：双线性臂少 37,398 个参数（去掉的 4 个 JBULearnedRange 栈）。
+# 两个参数量都要报，用 `python Source/Tools/count_upsampler_params.py` 打印。
+#
+# Budget-matched training / 预算对齐的训练:
+#   Scripts/train/train_upsampler_ablation.sh   (subset-40, 5 epochs, 4 GPU,
+#   bs 10, lr 1e-3 — identical to the TM_Model_C reference arm
+#   Checkpoint_C_direct_sub40_256).
+#
+# ---------------------------------------------------------------------------
+# Below: TM_Model_C's original header, kept verbatim.
+# 以下为 TM_Model_C 的原始头注释，原样保留。
+# ---------------------------------------------------------------------------
+# TM_Model_C — main proposed method: 3-level cascade fine head.
+#
+# Architecture: SAR encoder (Stage1-aligned) + frozen DINOv3 + multi-scale
+# coarse heads (stride-4 + stride-8, same as A) + a 3-level cascade refining
+# the position from stride-4 → stride-2 → stride-1, with learned upsamplers
+# at each level and a raw-image stem concatenated at stride-1 for high-frequency
+# residual signal.
+#
+# Per-level supervision (Gaussian-targeted BCE) with optional warmup on the
+# finer levels so coarse heads converge first.
+
+name: TM_Model_CB
+description: Ablation control — TM_Model_C with the coarse JBU lift replaced by plain bilinear.
+
+architecture:
+  rgb_encoder:
+    type: DinoV3Backbone
+    freeze: true
+    args:
+      name: dinov3_vitl16
+      repo_path: "${root_path}/Source/Libs/dinov3/"
+      weights_path: "${root_path}/Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth"
+
+  sar_encoder:
+    type: SarResNet16GN
+    args:
+      in_chans: 3
+      dino_dim: 1024
+      layers: [3, 4, 6]
+      channels: [64, 128, 256]
+
+  matching:
+    type: CascadeHeadBilinear   # ← THE ONLY ARCHITECTURAL DIFFERENCE vs TM_Model_C (JBU guided ×4/×2 lift → plain bilinear). 与 TM_Model_C 唯一的架构差别。
+    args:
+      # 2026-05-27 redesign: FeatUp JBU at coarse heads, matching_dim 128 → 256.
+      # Cascade levels (stride-2, stride-1) keep their LearnedUpsampler since
+      # those operate on already-projected matching_dim features, not ViT raw
+      # features. State_dict NOT compatible with the old dim-128 CascadeHead.
+      dino_dim: 1024
+      matching_dim: 256
+      sar_size: 192                # 2026-06-14: 256/192 geometry (was 64). Builder reads sar_size from YAML, NOT --sar_size CLI (hub §6.1).
+      raw_stem_dim: 16             # raw-image stem output channels
+      use_stride_8_coarse: true    # keep stride-8 coarse for parity with A
+      cascade_window_2: 4          # ± cells at stride-2 around 2×coarse argmax → 9×9 H_2
+      cascade_window_1: 4          # ± pixels at stride-1 around 2×stride-2 argmax → 9×9 H_1
+
+training:
+  stage_1:
+    load_pretrained_sar: false   # 2026-06-14: DIRECT training — random SAR init, NO Stage-1 (paper's direct-trained main method).
+    loss:
+      type: alignment_loss
+      tau: 0.07
+      radius: 1
+      lambda_global: 0.1
+    optimizer:
+      type: sgd
+      momentum: 0.9
+      weight_decay: 0.0001
+
+  stage_2:
+    freeze_sar_encoder: false      # 2026-06-14: DIRECT training — SAR encoder trained jointly with cascade (was frozen + Stage-1).
+    loss:
+      type: cascade_loss
+      # 2026-05-27 σ alignment with A/B/D:
+      #   stride-4: σ=1 cell = 4 px (unchanged)
+      #   stride-8: σ=0.5 cell = 4 px (tightened from 1 cell = 8 px)
+      #   stride-2: σ=1 cell = 2 px (unchanged — natural cascade ladder)
+      #   stride-1: σ=1 cell = 1 px (unchanged — sub-pixel)
+      # 物理 σ 序列: 4 → 4 → 2 → 1 px，cascade 阶级化收紧。
+      # Coarse:
+      match_w4: 1.0
+      match_w8: 0.5
+      match_sigma4: 1.0
+      match_sigma8: 0.5
+      # Cascade levels:
+      match_w_2: 0.5
+      match_sigma_2: 1.0
+      warmup_epoch_2: 0            # 2026-06-16: Phase-2 full warm-start — cascade is ALREADY trained (Phase-1 e0-e4), so full weight from epoch 0. NO re-warmup (was 1). 二阶段全量 warm-start：级联已训练，自 epoch 0 即满权重，不再 warmup。
+      match_w_1: 1.0
+      match_sigma_1: 1.0
+      warmup_epoch_1: 0            # 2026-06-16: Phase-2 full warm-start — stride-1 fine head already trained, full weight from epoch 0 (was 2). Re-warmup would waste 2/3 of a 3-epoch Phase-2 run with the cascade suppressed. 同上：避免浪费 2/3 的 Phase-2 训练.
+    optimizer:
+      type: adamw
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+
+inference:
+  # C isolates the cascade architecture contribution → hard argmax only.
+  # The sub-pixel quadratic refinement is ablated separately as TM_Model_E
+  # (cascade + sub-pixel), so the table can attribute each improvement.
+  argmax_type: hard
+  primary_stride: 4

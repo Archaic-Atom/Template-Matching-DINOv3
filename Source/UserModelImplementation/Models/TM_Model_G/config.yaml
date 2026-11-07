@@ -1,0 +1,136 @@
+# TM_Model_G — TM_Model_F with the Stage-2 SAR encoder TRAINABLE (2026-09-09).
+#
+# G exists for ONE reason: to make `training.stage_2.freeze_sar_encoder` a
+# single-line toggle. This file is a byte-copy of TM_Model_F/config.yaml with
+# that one value flipped true -> false (plus this header, `name` and
+# `description`). Everything that could otherwise confound the comparison —
+# architecture, geometry, losses, optimizers, Stage-1 block — is identical, so
+#     diff TM_Model_F/config.yaml TM_Model_G/config.yaml
+# IS the factorial-control evidence for the response letter.
+#
+# F and G together are the revised 2x2 (Reviewer 2, comment 5a):
+#     S1/Fr = TM_Model_F, modelDir seeded from the shared Stage-1 ckpt
+#     R/Fr  = TM_Model_F, empty modelDir (random SAR trunk, then frozen)
+#     S1/Tr = TM_Model_G, modelDir seeded from the SAME Stage-1 ckpt
+#     R/Tr  = TM_Model_G, empty modelDir (random SAR trunk, trainable)
+# One model family, one Stage-1 checkpoint (Checkpoint_F_stage1_256/
+# model_epoch_9.pth), two binary factors. The published 2x2 was not factorial:
+# its trainable arms were TM_Model_A (asymmetric PatchNCE Stage-1) and
+# TM_Model_B (random) while both frozen arms were TM_Model_F, so the
+# initialization factor was crossed with the Stage-1 recipe.
+#
+# G 的唯一存在理由:把 `freeze_sar_encoder` 变成一行开关。本文件是
+# TM_Model_F/config.yaml 的逐字节复制,只把该值 true 改成 false(外加本注释块、
+# `name` 与 `description`)。架构、几何、损失、优化器、Stage-1 块全部相同,因此
+#     diff TM_Model_F/config.yaml TM_Model_G/config.yaml
+# 本身就是回复信里的析因对照证据。F 与 G 合起来构成修订后的 2x2(审稿人 2
+# 意见 5a):四臂共用同一份 Stage-1 权重,只有"是否加载 / 是否冻结"两个二值因子。
+# 原论文的 2x2 不是析因设计:可训行用 A/B、冻结行用 F,初始化因子与 Stage-1
+# 配方混淆。
+#
+# Note: `stage_1.load_pretrained_sar` stays `true` (as in F). Random init is
+# NOT enforced by this flag — it is enforced by the launcher handing the arm an
+# EMPTY modelDir, exactly as run_frozen_arms_F.sh does for R/Fr.
+# 注意:`load_pretrained_sar` 保持 true(与 F 一致)。随机初始化不由该开关控制,
+# 而是由启动脚本给该臂一个空 modelDir 来强制(与 R/Fr 的做法完全相同)。
+
+name: TM_Model_G
+description: TM_Model_F with a TRAINABLE Stage-2 SAR encoder; the only functional diff is freeze_sar_encoder false.
+
+architecture:
+  rgb_encoder:
+    type: DinoV3Backbone
+    freeze: true
+    args:
+      name: dinov3_vitl16
+      repo_path: "${root_path}/Source/Libs/dinov3/"
+      weights_path: "${root_path}/Weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth"
+
+  sar_encoder:
+    type: SarResNet16GN
+    args:
+      in_chans: 3
+      dino_dim: 1024
+      layers: [3, 4, 6]
+      channels: [64, 128, 256]
+
+  # Stage-1-only learned-IP projectors; built only when is_stage_2=False,
+  # checkpointed inside trainable_tail.align_ip.*, dropped at Stage-2 load.
+  # 仅 Stage-1 构建的投影头;存在 trainable_tail.align_ip.*,Stage-2 加载时丢弃。
+  alignment_ip:
+    type: AlignmentIPHead
+    args:
+      sar_dim: 1024
+      dino_dim: 1024
+      proj_dim: 256
+
+  matching:
+    type: StandardMatchingHeadJBU
+    args:
+      # Identical to TM_Model_A (256/192 geometry, fine window ±24).
+      # 与 A 完全一致,保证唯一变量是 Stage-1 目标 + 冻结。
+      dino_dim: 1024
+      matching_dim: 256
+      fine_dim: 32
+      fine_margin: 24
+      sar_size: 192
+
+training:
+  stage_1:
+    load_pretrained_sar: true            # resume support for the Stage-1 run itself
+    loss:
+      type: alignment_ip_loss
+      tau: 0.07
+      radius: 1
+      # VICReg weights: FINAL = 1.0/0.04 (run-1 operating point), with the
+      # rank-64 target ABANDONED as information-theoretically unreachable
+      # (2026-06-11 decision). Evidence: run 1 (λ=1/0.04) settled erank≈22;
+      # run 3 (λ=25/1.0 paper values) DISTORTED to erank≈7 with vic_cov
+      # RISING — facing ~20-d intrinsically-correlated shared content, the
+      # cov penalty kills redundant dims instead of finding orthogonal
+      # content that doesn't exist. erank≈22 ≈ F3's shared CCA subspace
+      # dimension = the alignable cross-modal information capacity. The
+      # 22-vs-64 (E2) mismatch is now a PAPER FINDING, not a tuning failure.
+      # VICReg 权重最终定 1.0/0.04(run-1 操作点),放弃 rank-64 目标 ——
+      # 信息论上达不到:共享内容本征维数 ~20(F3),run 3 重罚反而把秩压到 7
+      # (协方差惩罚面对本质相关的内容,杀冗余维比造正交内容便宜)。
+      # erank≈22 = 可对齐跨模态信息容量;22 vs 64(E2) 的错配是论文发现。
+      lambda_var: 1.0
+      lambda_cov: 0.04
+      erank_rows: 4096
+    optimizer:
+      # Same optimizer family as A's Stage-1 so the objective (not the
+      # optimizer) is the experimental variable.
+      # 与 A 的 Stage-1 同优化器,保证实验变量只有目标函数。
+      type: sgd
+      momentum: 0.9
+      weight_decay: 0.0001
+
+  stage_2:
+    # THE ONE LINE that differs from TM_Model_F: the encoder (trunk) trains
+    # jointly with the matching head in Stage-2, so Stage-2 CAN overwrite
+    # Stage-1's alignment (the measured F0 mechanism). This is the trainable
+    # row of the 2x2. Freezing is still required for the F arms, so the JF DDP
+    # find_unused_parameters patch stays a prerequisite for the campaign as a
+    # whole (F's frozen trunk registers gradient-less params).
+    # 与 TM_Model_F 唯一不同的一行:Stage-2 里 encoder 与匹配头联合训练,因此
+    # Stage-2 可以覆写 Stage-1 的对齐(已测得的 F0 机制)。这是 2x2 的可训行。
+    # F 臂仍需冻结,所以整个实验依旧依赖远端 JF 的 find_unused_parameters patch。
+    freeze_sar_encoder: false
+    loss:
+      type: two_stage_matching_loss
+      match_w4: 1.0
+      match_w8: 0.5
+      match_sigma4: 1.0
+      match_sigma8: 0.5
+      match_sigma_fine: 1.0
+      match_w_fine: 1.0
+      fine_warmup_epochs: 3
+    optimizer:
+      type: adamw
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+
+inference:
+  argmax_type: hard
+  primary_stride: 4

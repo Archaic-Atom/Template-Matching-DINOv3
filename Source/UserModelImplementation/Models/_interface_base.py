@@ -73,6 +73,13 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
             elif self._is_stage_2 and 'sar_encoder' in name and sar_freeze_stage2:
                 param.requires_grad = False
 
+        loss_type = (self._config.get('training', {})
+                     .get('stage_2', {}).get('loss', {}).get('type'))
+        if self._is_stage_2 and loss_type == 'two_stage_matching_loss':
+            # Fusion selects a no-grad crop; the loss uses separate heatmaps.
+            # 融合仅用于无梯度裁剪定位，损失直接使用各尺度热图。
+            model.fusion_logits.requires_grad_(False)
+
         return [model]
 
     # -----------------------------------------------------------------
@@ -84,7 +91,12 @@ class ComponentBasedInterface(jf.UserTemplate.ModelHandlerTemplate):
         opt_cfg = self._config.get('training', {}).get(stage_key, {}).get('optimizer', {})
         opt_type = opt_cfg.get('type', 'adamw' if self._is_stage_2 else 'sgd')
 
-        params = [p for p in model[self.ID_MODEL].parameters() if p.requires_grad]
+        net = self._unwrap_ddp(model[self.ID_MODEL])
+        fusion = getattr(net, 'fusion_logits', None)
+        # Keep the historical optimizer slot/order for checkpoint compatibility.
+        # 保留旧优化器槽位和顺序；无梯度的融合参数仍不会更新。
+        params = [p for p in net.parameters()
+                  if p.requires_grad or p is fusion]
 
         if opt_type.lower() == 'adamw':
             opt = torch.optim.AdamW(

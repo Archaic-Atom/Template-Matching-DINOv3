@@ -7,9 +7,13 @@ parts of composite heads (StandardMatchingHead, CascadeHead).
 """
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from .bilinear_upsampler import BilinearStack
 
 
 def _gn(num_channels: int, num_groups: int = 32) -> nn.GroupNorm:
@@ -96,6 +100,68 @@ class ProjMatchJBU(nn.Module):
         return F.normalize(x, p=2, dim=1)
 
 
+class ProjMatchBilinear(nn.Module):
+    """Unguided control for ``ProjMatchJBU``: plain bilinear in place of JBU.
+
+    ``ProjMatchJBU`` 的无引导对照：把 JBU 换成纯双线性，其余全部不变。
+
+    Written for the guided-upsampling ablation (Reviewer 1, comment 7). It is
+    a drop-in replacement for ``ProjMatchJBU``: same constructor signature,
+    same ``forward(source, guidance)`` contract, same feature source
+    (stride-16, ``feat_dim``-d), same output stride (``×2^levels``), same
+    output channel count, same L2-normalization. The guidance image is
+    accepted and ignored, so the calling head needs no branching.
+
+    为引导上采样消融而写（审稿人 1 第 7 条）。它是 ``ProjMatchJBU`` 的直接替换：
+    构造签名相同，``forward(source, guidance)`` 契约相同，特征来源相同
+    （stride-16 的 ``feat_dim`` 维特征），输出 stride / 通道数 / L2-norm 都相同。
+    guidance 照收不用，调用方无需分支。
+
+    **The feature source is the point.** The repo's older non-JBU
+    ``CascadeHead`` is NOT a valid control for this ablation: it feeds
+    ``ProjMatchSAR`` from the SAR encoder's native stride-4 ``C2`` map, so
+    swapping to it changes the feature source as well as the kernel. This
+    class keeps both modalities on their stride-16 1024-d features exactly as
+    ``CascadeHeadJBU`` does, leaving the upsampling kernel as the only
+    difference.
+
+    **关键在特征来源**：仓库里旧的非 JBU ``CascadeHead`` 不是本消融的合法对照——
+    它的 SAR 侧用 ``ProjMatchSAR`` 吃编码器原生 stride-4 的 ``C2``，换过去会同时
+    改掉特征来源和上采核。本类与 ``CascadeHeadJBU`` 一样让双边都吃 stride-16
+    1024-d 特征，唯一的差别就只剩上采核。
+
+    Parameter note: this class is *smaller* than ``ProjMatchJBU`` by the
+    ``JBULearnedRange`` weights it drops (6,233 per level). See
+    ``Source/Tools/count_upsampler_params.py``.
+    参数说明：本类比 ``ProjMatchJBU`` 少掉被去除的 ``JBULearnedRange`` 权重
+    （每级 6,233 个）。精确账目见 ``Source/Tools/count_upsampler_params.py``。
+    """
+
+    def __init__(self, feat_dim: int = 1024, out_dim: int = 256,
+                 levels: int = 2, guidance_dim: int = 3) -> None:
+        super().__init__()
+        # Attribute name `jbu` is deliberately NOT reused: the state_dict of
+        # this arm should be self-describing, and it must not silently absorb
+        # a JBU checkpoint's keys under `strict=False`.
+        # 故意不复用 `jbu` 这个属性名：本臂的 state_dict 要自明，且不能在
+        # `strict=False` 下悄悄吃掉 JBU checkpoint 的键。
+        self.up = BilinearStack(feat_dim=feat_dim, out_dim=out_dim,
+                                levels=levels, guidance_dim=guidance_dim)
+
+    def forward(self, source: torch.Tensor,
+                guidance: torch.Tensor | None = None) -> torch.Tensor:
+        """Upsample ``source`` bilinearly, return L2-normalized.
+
+        Args:
+            source: ``(B, feat_dim, h, w)`` low-res feature (stride-16).
+            guidance: ``(B, guidance_dim, H, W)`` raw image — accepted for
+                signature parity with ``ProjMatchJBU`` and ignored.
+                为与 ``ProjMatchJBU`` 签名一致而保留，不使用。
+        """
+        x = self.up(source, guidance)
+        return F.normalize(x, p=2, dim=1)
+
+
 class MatchingHead(nn.Module):
     """Cross-correlation (grouped conv) between L2-normalized template and search,
     optionally followed by a 3x3 conv refinement on the resulting heatmap.
@@ -134,5 +200,10 @@ class MatchingHead(nn.Module):
         # groups=B trick: each sample's template is its own conv kernel.
         weight = template
         inp = search.reshape(1, B * C, h_s, w_s)
+        # Opt-in layout for faster cuDNN grouped correlation on AutoDL GPUs.
+        # 仅改变内存布局；形状、分组和相关运算保持不变。
+        if os.environ.get("TM_CORRELATION_CHANNELS_LAST") == "1":
+            inp = inp.contiguous(memory_format=torch.channels_last)
+            weight = weight.contiguous(memory_format=torch.channels_last)
         out = F.conv2d(inp, weight, groups=B)
         return out.transpose(0, 1).contiguous()  # (B, 1, h_o, w_o)

@@ -1,0 +1,125 @@
+# TM_Model_CW — TM_Model_C with the WEB-pretrained DINOv3 provider (2026-09-10).
+#
+# CW exists for ONE reason: to make the optical provider's PRETRAINING CORPUS a
+# single-line toggle. This file is a byte-copy of TM_Model_C/config.yaml with
+# `architecture.rgb_encoder.args.weights_path` pointed at the LVD-1689M
+# checkpoint instead of SAT-493M (plus this header, `name` and `description`).
+# Everything else — SAR encoder, guided upsampling, matching projection,
+# cascade, losses, optimizer, geometry — is identical, so
+#     diff TM_Model_C/config.yaml TM_Model_CW/config.yaml
+# IS the controlled-comparison evidence for the response letter.
+#
+# Answers Reviewer 1, comment 5: "whether the satellite-specific pretraining of
+# the DINOv3 provider is essential to the result, and whether a standard
+# ImageNet-pretrained DINOv3 would perform comparably".
+#
+# ⚠ DINOv3 publishes NO ImageNet-1k ViT-L/16. Its non-satellite ViT-L/16 is
+# pretrained on LVD-1689M (web-scale, curated), and that is the checkpoint a
+# practitioner without satellite pretraining would actually download. The letter
+# must name both corpora rather than let "ImageNet-pretrained" stand for a
+# checkpoint that does not exist.
+#
+# ⚠ THE FILE NAME IS LOAD-BEARING. dinov3/hub/backbones.py:dinov3_vitl16()
+# extracts the 8-character hash from the path with the regex `-(.{8}).pth` and
+# sets untie_global_and_local_cls_norm=True ONLY for `eadcf0ff` (SAT-493M),
+# which is what builds the extra `local_cls_norm` module. SAT-493M ships 370
+# tensors, LVD-1689M 368; the 368 shared tensors have identical shapes. Loading
+# is strict=True, so a renamed file fails loudly rather than mis-loading.
+# Verified on machine 2 (2026-09-10): LOAD OK, params=303,154,176,
+# local_cls_norm=None, layer-17 map (1,1024,16,16) — same shape as SAT-493M.
+#
+# CW 的唯一存在理由:把「光学 provider 的预训练语料」变成一行开关。本文件是
+# TM_Model_C/config.yaml 的逐字节复制,只把 weights_path 从 SAT-493M 改成
+# LVD-1689M(外加本注释块、name 与 description)。其余全部相同,因此
+#     diff TM_Model_C/config.yaml TM_Model_CW/config.yaml
+# 本身就是回复信里的受控对照证据。回应审稿人 1 第 5 条。
+# ⚠ DINOv3 没有 ImageNet-1k 的 ViT-L/16,非卫星版就是 web 级的 LVD-1689M,
+#   信里必须点名两个语料,不能写成 "ImageNet-pretrained"。
+# ⚠ 文件名有语义:加载器用正则 `-(.{8}).pth` 抠哈希决定建什么架构,只有
+#   `eadcf0ff` 会多建 local_cls_norm 模块。改名会因 strict=True 直接报错。
+#   2026-09-10 已在机器 2 实测加载 + 前向通过。
+
+name: TM_Model_CW
+description: Ablation control — TM_Model_C with the web-pretrained (LVD-1689M) DINOv3 provider.
+
+architecture:
+  rgb_encoder:
+    type: DinoV3Backbone
+    freeze: true
+    args:
+      name: dinov3_vitl16
+      repo_path: "${root_path}/Source/Libs/dinov3/"
+      # THE ONE LINE that differs from TM_Model_C: the frozen optical provider
+      # is the web-pretrained checkpoint, not the satellite-pretrained one.
+      # 与 TM_Model_C 唯一不同的一行:冻结的光学 provider 换成 web 预训练权重。
+      weights_path: "${root_path}/Weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+
+  sar_encoder:
+    type: SarResNet16GN
+    args:
+      in_chans: 3
+      dino_dim: 1024
+      layers: [3, 4, 6]
+      channels: [64, 128, 256]
+
+  matching:
+    type: CascadeHeadJBU
+    args:
+      # 2026-05-27 redesign: FeatUp JBU at coarse heads, matching_dim 128 → 256.
+      # Cascade levels (stride-2, stride-1) keep their LearnedUpsampler since
+      # those operate on already-projected matching_dim features, not ViT raw
+      # features. State_dict NOT compatible with the old dim-128 CascadeHead.
+      dino_dim: 1024
+      matching_dim: 256
+      sar_size: 192                # 2026-06-14: 256/192 geometry (was 64). Builder reads sar_size from YAML, NOT --sar_size CLI (hub §6.1).
+      raw_stem_dim: 16             # raw-image stem output channels
+      use_stride_8_coarse: true    # keep stride-8 coarse for parity with A
+      cascade_window_2: 4          # ± cells at stride-2 around 2×coarse argmax → 9×9 H_2
+      cascade_window_1: 4          # ± pixels at stride-1 around 2×stride-2 argmax → 9×9 H_1
+
+training:
+  stage_1:
+    load_pretrained_sar: false   # 2026-06-14: DIRECT training — random SAR init, NO Stage-1 (paper's direct-trained main method).
+    loss:
+      type: alignment_loss
+      tau: 0.07
+      radius: 1
+      lambda_global: 0.1
+    optimizer:
+      type: sgd
+      momentum: 0.9
+      weight_decay: 0.0001
+
+  stage_2:
+    freeze_sar_encoder: false      # 2026-06-14: DIRECT training — SAR encoder trained jointly with cascade (was frozen + Stage-1).
+    loss:
+      type: cascade_loss
+      # 2026-05-27 σ alignment with A/B/D:
+      #   stride-4: σ=1 cell = 4 px (unchanged)
+      #   stride-8: σ=0.5 cell = 4 px (tightened from 1 cell = 8 px)
+      #   stride-2: σ=1 cell = 2 px (unchanged — natural cascade ladder)
+      #   stride-1: σ=1 cell = 1 px (unchanged — sub-pixel)
+      # 物理 σ 序列: 4 → 4 → 2 → 1 px，cascade 阶级化收紧。
+      # Coarse:
+      match_w4: 1.0
+      match_w8: 0.5
+      match_sigma4: 1.0
+      match_sigma8: 0.5
+      # Cascade levels:
+      match_w_2: 0.5
+      match_sigma_2: 1.0
+      warmup_epoch_2: 0            # 2026-06-16: Phase-2 full warm-start — cascade is ALREADY trained (Phase-1 e0-e4), so full weight from epoch 0. NO re-warmup (was 1). 二阶段全量 warm-start：级联已训练，自 epoch 0 即满权重，不再 warmup。
+      match_w_1: 1.0
+      match_sigma_1: 1.0
+      warmup_epoch_1: 0            # 2026-06-16: Phase-2 full warm-start — stride-1 fine head already trained, full weight from epoch 0 (was 2). Re-warmup would waste 2/3 of a 3-epoch Phase-2 run with the cascade suppressed. 同上：避免浪费 2/3 的 Phase-2 训练.
+    optimizer:
+      type: adamw
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+
+inference:
+  # C isolates the cascade architecture contribution → hard argmax only.
+  # The sub-pixel quadratic refinement is ablated separately as TM_Model_E
+  # (cascade + sub-pixel), so the table can attribute each improvement.
+  argmax_type: hard
+  primary_stride: 4

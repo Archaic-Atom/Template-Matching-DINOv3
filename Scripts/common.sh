@@ -107,6 +107,7 @@ tm_eval() {
     echo "==== EVAL ${model} [${tag}] START $(date '+%F %T') (gpu ${gpu}, n=${num}) ===="
     echo "     ckpt: ${ckpt}"
     CUDA_VISIBLE_DEVICES="$gpu" "$TM_PY" -u Source/main.py \
+        --root_path "$TM_PROJ" \
         --mode test --dist False --gpu 1 --port "$port" \
         --modelName "$model" --dataset tmdataset --is_stage_2 True \
         --trainListPath "$csv" --imgNum "$num" \
@@ -130,6 +131,13 @@ tm_eval() {
 #   uses it as the progress denominator).
 #   用 nohup 起 DDP 训练（断开 SSH 也不会死），打印 PID 与日志路径。`--imgNum` 取清单
 #   的真实样本总数（JackFramework 用它作进度分母）。
+#
+#   Host-RAM knob: `TM_DATALOADER_NUM` (default 8, unchanged) sets
+#   `--dataloaderNum`. Host RAM ~= gpus x dataloaderNum x shuffle_buffer, so
+#   concurrent runs must lower it — see Scripts/train/train_2x2.sh.
+#   主机内存旋钮：`TM_DATALOADER_NUM`（默认 8，与原行为一致）控制 `--dataloaderNum`。
+#   主机内存 ≈ gpus × dataloaderNum × shuffle_buffer，多臂并发时必须调小，
+#   见 Scripts/train/train_2x2.sh。
 # --------------------------------------------------------------------------
 tm_train() {
     local model="${1:?usage: tm_train <modelName> <manifest> <ckpt_dir> <epochs> <tag> [gpus] [batch] [port]}"
@@ -157,15 +165,30 @@ tm_train() {
     local real_total
     real_total=$(tail -n +2 "$manifest" | awk -F, '{s+=$2} END{print s}')
 
+    # TM_DEVICES pins the PHYSICAL GPUs (comma list). The default keeps the old
+    # behaviour of taking the first `gpus` devices, which is silently wrong the
+    # moment another job already holds GPU 0 -- the run then fights an existing
+    # job for memory instead of using the idle cards.
+    # TM_DEVICES 指定物理 GPU（逗号分隔）。默认沿用"取前 gpus 张"的旧行为，但只要
+    # GPU 0 已被别的任务占着，这个默认就是错的：新任务会去和旧任务抢显存，而不是
+    # 用空闲卡。
     local devices
-    devices=$(seq -s, 0 $((gpus - 1)))
+    devices="${TM_DEVICES:-$(seq -s, 0 $((gpus - 1)))}"
+    local n_dev
+    n_dev=$(printf '%s' "$devices" | tr ',' '\n' | grep -c .)
+    if [ "$n_dev" -ne "$gpus" ]; then
+        echo "ERROR: TM_DEVICES lists ${n_dev} device(s) (${devices}) but gpus=${gpus}." >&2
+        echo "       DDP would spawn ${gpus} ranks onto ${n_dev} visible GPUs and hang." >&2
+        return 1
+    fi
 
     export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
     echo "==== TRAIN ${model} [${tag}] gpus=${gpus} bs=${batch} epochs=${epochs} ===="
     echo "     manifest=${manifest} samples=${real_total} ckpt=${ckpt_dir}"
     CUDA_VISIBLE_DEVICES="$devices" JF_PROGRESS_COLUMNS=400 nohup "$TM_PY" -u Source/main.py \
+        --root_path "$TM_PROJ" \
         --mode train --dataset tmdataset --modelName "$model" --is_stage_2 True \
-        --dataloaderType iterable --dataloaderNum 8 --sampleNum 1 \
+        --dataloaderType iterable --dataloaderNum "${TM_DATALOADER_NUM:-8}" --sampleNum 1 \
         --sar_size "$TM_SAR_SIZE" --matching_dim "$TM_MATCHING_DIM" \
         --shuffle_buffer "${TM_SHUFFLE_BUFFER:-30000}" --lr "${TM_LR:-1e-3}" \
         --auto_save_num 1 --dist True --gpu "$gpus" --batchSize "$batch" --port "$port" \

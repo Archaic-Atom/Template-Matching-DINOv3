@@ -33,6 +33,17 @@ state_dict prefixes (relative to ComposedTM.trainable_tail.matching.):
     sar_raw_stem, rgb_raw_stem                  ← cascade-specific
     proj_sar_1, proj_rgb_1                      ← cascade-specific
     head_1                                       ← cascade-specific
+
+Three registered heads live here:
+    CascadeHead          legacy — SAR side eats the encoder's native stride-4 C2
+    CascadeHeadJBU       deployed (TM_Model_C) — coarse lift by FeatUp JBU
+    CascadeHeadBilinear  ablation control (TM_Model_CB) — coarse lift by plain
+                         bilinear, same stride-16 feature source as JBU
+
+本文件注册了三个 head：CascadeHead（旧版，SAR 侧吃原生 stride-4 的 C2）、
+CascadeHeadJBU（部署版 TM_Model_C，coarse 用 FeatUp JBU 上采）、
+CascadeHeadBilinear（消融对照 TM_Model_CB，coarse 改用纯双线性，特征来源与 JBU
+相同）。CascadeHeadBilinear 只覆写 `_make_coarse_proj`，其余全部继承。
 """
 from __future__ import annotations
 
@@ -41,7 +52,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .registry import register
-from .coarse_matching import ProjMatchSAR, ProjMatchRGB, ProjMatchJBU, MatchingHead
+from .coarse_matching import (ProjMatchSAR, ProjMatchRGB, ProjMatchJBU,
+                              ProjMatchBilinear, MatchingHead)
 
 
 def _gn(num_channels: int, num_groups: int = 32) -> nn.GroupNorm:
@@ -370,18 +382,14 @@ class CascadeHeadJBU(nn.Module):
 
         # === Coarse stride-4: JBU 2 levels (×4 upsample, stride-16 → 4) ===
         # 与 StandardMatchingHeadJBU 一致：双边都用 stride-16 1024-d 特征。
-        self.proj_sar_4 = ProjMatchJBU(
-            feat_dim=dino_dim, out_dim=matching_dim, levels=2)
-        self.proj_rgb_4 = ProjMatchJBU(
-            feat_dim=dino_dim, out_dim=matching_dim, levels=2)
+        self.proj_sar_4 = self._make_coarse_proj(dino_dim, matching_dim, 2)
+        self.proj_rgb_4 = self._make_coarse_proj(dino_dim, matching_dim, 2)
         self.head_4 = MatchingHead(refine=True)
 
         # === Coarse stride-8: JBU 1 level (×2 upsample, stride-16 → 8) ===
         if self.use_stride_8_coarse:
-            self.proj_sar_8 = ProjMatchJBU(
-                feat_dim=dino_dim, out_dim=matching_dim, levels=1)
-            self.proj_rgb_8 = ProjMatchJBU(
-                feat_dim=dino_dim, out_dim=matching_dim, levels=1)
+            self.proj_sar_8 = self._make_coarse_proj(dino_dim, matching_dim, 1)
+            self.proj_rgb_8 = self._make_coarse_proj(dino_dim, matching_dim, 1)
             self.head_8 = MatchingHead(refine=True)
 
         # === Cascade level 1/2: bilinear+conv on PROJECTED matching feats ===
@@ -409,6 +417,39 @@ class CascadeHeadJBU(nn.Module):
         self.proj_rgb_1 = ProjMatchSAR(
             in_ch=matching_dim + raw_stem_dim, out_dim=matching_dim)
         self.head_1 = MatchingHead(refine=True)
+
+    # -----------------------------------------------------------------
+    # Coarse-projector factory (the single ablation seam)
+    # -----------------------------------------------------------------
+
+    def _make_coarse_proj(self, feat_dim: int, out_dim: int,
+                          levels: int) -> nn.Module:
+        """Build one coarse stride-16 → stride-4/8 projector.
+
+        构造一个 coarse 阶段 stride-16 → stride-4/8 的投影器。
+
+        This is the ONE seam the guided-upsampling ablation cuts at:
+        ``CascadeHeadBilinear`` overrides this method to return
+        ``ProjMatchBilinear`` instead, and inherits everything else —
+        ``__init__`` body, module names, ``forward`` — verbatim. Keeping the
+        swap in a factory (rather than constructing JBU and overwriting it)
+        also means the bilinear arm never imports FeatUp.
+
+        引导上采样消融只在这一处“下刀”：``CascadeHeadBilinear`` 覆写本方法返回
+        ``ProjMatchBilinear``，其余（``__init__`` 主体、模块名、``forward``）
+        原样继承。用工厂方法而不是“先造 JBU 再覆盖”，也让双线性臂完全不 import
+        FeatUp。
+
+        Args:
+            feat_dim: stride-16 feature channels (1024).
+            out_dim: matching-space channels (``matching_dim``).
+            levels: number of ×2 steps — ``2`` for stride-4, ``1`` for stride-8.
+
+        Returns:
+            A module with the ``forward(source, guidance) -> L2-normalized``
+            contract.
+        """
+        return ProjMatchJBU(feat_dim=feat_dim, out_dim=out_dim, levels=levels)
 
     # -----------------------------------------------------------------
     # Helpers (same as CascadeHead)
@@ -497,3 +538,86 @@ class CascadeHeadJBU(nn.Module):
                                          if H_8 is not None else None),
         }
         return out
+
+
+# ---------------------------------------------------------------------------
+# CascadeHeadBilinear — 引导上采样消融的对照臂
+# ---------------------------------------------------------------------------
+
+@register("CascadeHeadBilinear")
+class CascadeHeadBilinear(CascadeHeadJBU):
+    """``CascadeHeadJBU`` with the coarse JBU kernel replaced by bilinear.
+
+    把 ``CascadeHeadJBU`` 的 coarse JBU 核换成纯双线性，其余全部不动。
+
+    The control arm for Reviewer 1's guided-upsampling ablation
+    (TGRS-2026-06939, comment 7). Sec. III asserts that plain bilinear
+    upsampling "would blur the boundaries that matching relies on"; this class
+    is what turns that assertion into a measurement.
+
+    审稿人 1 第 7 条（引导上采样消融）的对照臂。论文第三节断言纯双线性上采样会
+    “糊掉匹配所依赖的边界”；本类把这个断言变成可测量的对照。
+
+    **What changes, and only this:** ``proj_{sar,rgb}_{4,8}`` become
+    ``ProjMatchBilinear`` instead of ``ProjMatchJBU``. Both modalities still
+    consume their **stride-16, 1024-d** features (``sar16`` / ``rgb_feat[-1]``)
+    with their own raw image passed in as guidance — the bilinear projector
+    accepts and ignores it. Output strides, channel counts, L2-normalization,
+    the coarse fusion, the stride-2 / stride-1 cascade, the ``RawImageStem``,
+    the loss interface and the output dict are all inherited unchanged.
+
+    **改动只有这一处**：``proj_{sar,rgb}_{4,8}`` 由 ``ProjMatchJBU`` 换成
+    ``ProjMatchBilinear``。双边仍然吃各自的 **stride-16 1024-d** 特征
+    （``sar16`` / ``rgb_feat[-1]``），原图仍作为 guidance 传入（双线性投影器照收
+    不用）。输出 stride、通道数、L2-norm、coarse 融合、stride-2/1 级联、
+    ``RawImageStem``、损失接口与输出字典全部原样继承。
+
+    **What is NOT ablated (state this in the table caption).** Only the coarse
+    ×4 / ×2 lift is ablated. The cascade's stride-2 and stride-1
+    ``LearnedUpsampler``s (bilinear + 2 convs) are untouched in both arms, and
+    so is the ``RawImageStem``. A reader must not read this row as "no learned
+    upsampling at all".
+
+    **没有被消融的部分（表格 caption 里必须写清）**：只消融了 coarse 的 ×4/×2
+    上采。级联 stride-2 / stride-1 的 ``LearnedUpsampler``（bilinear + 2 conv）
+    与 ``RawImageStem`` 在两臂里都保持不变。不能把这一行读成“完全没有可学习上采样”。
+
+    **Do not use the legacy ``CascadeHead`` as this control.** It feeds
+    ``ProjMatchSAR`` from the SAR encoder's native stride-4 ``C2`` map, so it
+    changes the feature source as well as the kernel and answers a different
+    question (symmetric stride-16 design vs. asymmetric native-resolution
+    design) — a legitimate second ablation row, not this one.
+
+    **不要拿旧的 ``CascadeHead`` 当本对照**：它的 SAR 侧用 ``ProjMatchSAR`` 吃
+    编码器原生 stride-4 的 ``C2``，同时改掉了特征来源与上采核，回答的是另一个问题
+    （对称 stride-16 设计 vs 非对称原生分辨率设计）——那是另一行合法的消融，不是这一行。
+
+    **Not parameter-matched.** Dropping the four ``JBULearnedRange`` stacks
+    removes 37,398 parameters from the head (2 × 2 levels + 2 × 1 level, at
+    6,233 per level). That is ~0.5 % of the head and ~0.09 % of the trainable
+    tail; report both counts in the table rather than arguing about capacity.
+    ``Source/Tools/count_upsampler_params.py`` prints the exact ledger for
+    whichever geometry is configured.
+
+    **未做参数对齐**：去掉 4 个 ``JBULearnedRange`` 栈会让 head 少 37,398 个参数
+    （2 个 ×2 级 + 2 个 ×1 级，每级 6,233）。约占 head 的 0.5%、可训练部分的
+    0.09%；表格里如实报告两个参数量，不要靠论辩绕过容量问题。精确账目用
+    ``Source/Tools/count_upsampler_params.py`` 打印。
+
+    State_dict note: the coarse sub-keys become ``proj_*_{4,8}.up.*`` (bilinear)
+    instead of ``proj_*_{4,8}.jbu.*`` (JBU), so a JBU checkpoint cannot leak
+    into this arm through ``strict=False``. Every other key matches
+    ``CascadeHeadJBU`` exactly.
+    state_dict 说明：coarse 子键变成 ``proj_*_{4,8}.up.*``（双线性）而不是
+    ``proj_*_{4,8}.jbu.*``（JBU），因此 JBU 的 checkpoint 不会在 ``strict=False``
+    下悄悄漏进本臂；其余键与 ``CascadeHeadJBU`` 完全一致。
+    """
+
+    def _make_coarse_proj(self, feat_dim: int, out_dim: int,
+                          levels: int) -> nn.Module:
+        """Return the unguided projector — the whole of the ablation.
+
+        返回无引导投影器——这就是本消融的全部内容。
+        """
+        return ProjMatchBilinear(feat_dim=feat_dim, out_dim=out_dim,
+                                 levels=levels)

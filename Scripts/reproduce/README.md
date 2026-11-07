@@ -26,8 +26,9 @@ any path works without editing anything.
 | script | reproduces | default checkpoint |
 |---|---|---|
 | `eval_cascade.sh [ckpt] [gpu]` | **Table I** — in-domain SOTA, proposed cascade | `Checkpoint_C_phase2_8gpu/model_epoch_2.pth` |
-| `eval_arms.sh [gpu] [arm]` | **Table II** — 2×2 pre-alignment causal test | the four arm checkpoints |
-| `eval_cross_dataset.sh [ckpt] [gpu] [whu\|qxs]` | **Table III** — zero-shot cross-dataset | released cascade |
+| `eval_arms.sh [gpu] [arm]` | **Table III** — submitted single-run comparison | the four arm checkpoints |
+| `eval_2x2.sh <seeds> [gpu] [arm] [--dry-run]` | **Table IV / Figure 9** — repeated shared-initialization four-arm test | revision checkpoints |
+| `eval_cross_dataset.sh [ckpt] [gpu] [whu\|qxs]` | **Table VII** — zero-shot cross-dataset | released cascade |
 
 ```bash
 # headline number
