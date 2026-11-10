@@ -151,7 +151,7 @@ Template-Matching-DINOv3/
 
 平均误差 1.13 px，中位数 0 px。`Checkpoint_C_phase2_8gpu/model_epoch_2.pth`。
 
-### 共享初始化比较（表 IV，20k）
+### 共享初始化比较（表 V，20k）
 
 下表为五轮匹配训练后、seeds 2024–2028 的均值 ± 样本标准差。
 两个 S1 臂均从同一份对称 learned-inner-product Stage-1 权重开始。
@@ -260,8 +260,8 @@ bash Scripts/reproduce/eval_cascade.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pt
 export TM_EVAL_CSV=/path/to/image_test_2k_256.csv
 
 bash Scripts/reproduce/eval_cascade.sh                  # 表 I  —— 本文级联
-bash Scripts/reproduce/eval_arms.sh 0                   # 表 II —— 2x2 预对齐实验
-bash Scripts/reproduce/eval_cross_dataset.sh            # 表 III—— 零样本跨数据集
+bash Scripts/reproduce/eval_arms.sh 0                   # 表 IV —— 原单次比较
+bash Scripts/reproduce/eval_cross_dataset.sh            # 表 VIII —— 零样本跨数据集
 ```
 
 在 RTX 4080 上用发布的 cascade、2k 评测集实测：

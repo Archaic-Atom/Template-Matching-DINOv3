@@ -22,11 +22,11 @@ separately.
 
 | Checkpoint | Model | Use in the revised manuscript |
 |---|---|---|
-| `Checkpoint_C_phase2_8gpu/model_epoch_2.pth` | `TM_Model_C` | Headline direct-trained cascade; Tables I/II/VII/VIII/IX/XI/XII |
-| `Checkpoint_A_ft_256/model_epoch_4.pth` | `TM_Model_A` | Submitted pre-aligned trainable arm; Table III, Figure 8 |
-| `Checkpoint_B_256/model_epoch_4.pth` | `TM_Model_B` | Submitted random trainable arm; Tables I/III/XI and representation probes |
-| `Checkpoint_F_s2_frozen_256/model_epoch_4.pth` | `TM_Model_F` | Submitted pre-aligned frozen arm; Table III, Figure 12 |
-| `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth` | `TM_Model_F` | Submitted random frozen arm; Table III, Figure 12 |
+| `Checkpoint_C_phase2_8gpu/model_epoch_2.pth` | `TM_Model_C` | Headline direct-trained cascade; Tables I/II/VIII/IX/X/XII/XIII |
+| `Checkpoint_A_ft_256/model_epoch_4.pth` | `TM_Model_A` | Submitted pre-aligned trainable arm; Table IV, Figure 8 |
+| `Checkpoint_B_256/model_epoch_4.pth` | `TM_Model_B` | Submitted random trainable arm; Tables I/IV/XII and representation probes |
+| `Checkpoint_F_s2_frozen_256/model_epoch_4.pth` | `TM_Model_F` | Submitted pre-aligned frozen arm; Table IV, Figure 12 |
+| `Checkpoint_RF_s2_frozen_256/model_epoch_4.pth` | `TM_Model_F` | Submitted random frozen arm; Table IV, Figure 12 |
 | `Checkpoint_A_stage1_256/model_epoch_5.pth` | asymmetric Stage 1 | Initialization source for A-ft; Figure 8 |
 | `Checkpoint_F_stage1_256/model_epoch_9.pth` | symmetric learned-IP Stage 1 | Initialization and recovery diagnostics; Figure 7 |
 | `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | frozen DINOv3 ViT-L/16 | Shared satellite-pretrained optical provider |
@@ -36,7 +36,7 @@ The original set also includes the Phase-1 warm start in
 inside `Checkpoint_A_ft_256` and `Checkpoint_F_s2_frozen_256`.
 
 The submitted trainable and frozen S1 arms used different Stage-1 recipes.
-The revised Table IV uses a shared Stage-1 source for both pre-aligned arms
+The revised Table V uses a shared Stage-1 source for both pre-aligned arms
 and reports five seeds. Seed 2024 uses the original trained weights.
 
 ## Placement
@@ -69,7 +69,7 @@ bash Scripts/reproduce/eval_cascade.sh Checkpoint_C_phase2_8gpu/model_epoch_2.pt
 
 The default helper uses a 2k sample list. The Table I headline uses all
 2,236,840 scored placements. Select the same manifest when comparing numbers.
-For revised Table IV, use the common 20k list and `eval_2x2.sh`.
+For revised Table V, use the common 20k list and `eval_2x2.sh`.
 The DINOv3 backbone is a separate dependency; learned-component checkpoints
 exclude its frozen parameters. The `CW` configuration expects the web-pretrained
 LVD-1689M provider at the path in its YAML file.

@@ -12,22 +12,22 @@ below refer to the revised TGRS manuscript.
 
 | Experiment | Checkpoints | Paper reference |
 |---|---|---|
-| Shared-initialization four-arm test | Seeds 2025–2028; epoch 4 for S1/Tr, R/Tr, S1/Fr and R/Fr | Table IV; Figure 9 |
+| Shared-initialization four-arm test | Seeds 2025–2028; epoch 4 for S1/Tr, R/Tr, S1/Fr and R/Fr | Table V; Figure 9 |
 | Early training | Epochs 0–4 for S1/Tr and R/Tr, seeds 2025–2028 | Figure 13(a,b) |
 | Reduced matching pools | Epoch 4 for both arms at 10 and 20 shards, seed 2028 | Figure 13(c,d) |
-| Partial encoder freezing | Epoch 4, random and pre-aligned arms | Table V |
-| 100/500/1000 training pairs | Matching epoch 4 and Stage-1 epoch 9 for each set | Table VI |
-| Coarse JBU versus bilinear | Epoch 4 for both cascades | Tables X and XIII |
-| Shared SAR initialization | `shared_stage1/model_stage1_init.pth` | Table IV setup |
+| Partial encoder freezing | Epoch 4, random and pre-aligned arms | Table VI |
+| 100/500/1000 training pairs | Matching epoch 4 and Stage-1 epoch 9 for each set | Table VII |
+| Coarse JBU versus bilinear | Epoch 4 for both cascades | Tables XI and XIV |
+| Shared SAR initialization | `shared_stage1/model_stage1_init.pth` | Table V setup |
 
 Seed 2024 uses the original trained weights. This folder adds the later runs
 for seeds 2025–2028. The submitted single-run results remain separately listed
 in [MODELS.md](MODELS.md).
 
 The headline cascade is still
-`Checkpoint_C_phase2_8gpu/model_epoch_2.pth`. It supports Tables I, II, VII,
-VIII, IX, XI and XII. The new matched JBU cascade is a different run used in
-Tables X/XIII. Table XIII's single-shot profile uses the added seed-2028 R/Tr
+`Checkpoint_C_phase2_8gpu/model_epoch_2.pth`. It supports Tables I, II, VIII,
+IX, X, XII and XIII. The new matched JBU cascade is a different run used in
+Tables XI/XIV. Table XIV's single-shot profile uses the added seed-2028 R/Tr
 endpoint. Both coarse-upsampling arms retain the learned fine upsamplers.
 
 ## Placement and evaluation
@@ -58,3 +58,6 @@ The package's `REPRODUCTION_CONFIGS` preserves the recorded command and
 model-contract snapshots. Update server and data paths before using them.
 The held-out 20k test list is unchanged. The 100/500/1000-pair lists are nested
 training subsets, with matching Stage-1 and Stage-2 pair budgets.
+
+Table references follow the manuscript with the optical-provider comparison
+inserted as Table III (10 November 2026).

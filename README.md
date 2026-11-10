@@ -168,7 +168,7 @@ thresholds. Full test set = all 7,740 pairs × 289 offsets (≈2.24M positions).
 
 Mean error 1.13 px, median 0 px. `Checkpoint_C_phase2_8gpu/model_epoch_2.pth`.
 
-### Shared-initialization comparison (Table IV, 20k)
+### Shared-initialization comparison (Table V, 20k)
 
 Values are mean ± sample SD across seeds 2024–2028 after five matching epochs.
 Both S1 arms start from the same symmetric learned-inner-product Stage-1 checkpoint.
@@ -286,8 +286,8 @@ Inference only; nothing is trained and no checkpoint is modified.
 export TM_EVAL_CSV=/path/to/image_test_2k_256.csv
 
 bash Scripts/reproduce/eval_cascade.sh                  # Table I  — proposed cascade
-bash Scripts/reproduce/eval_arms.sh 0                   # Table III — submitted single-run test
-bash Scripts/reproduce/eval_cross_dataset.sh            # Table VII — zero-shot transfer
+bash Scripts/reproduce/eval_arms.sh 0                   # Table IV — submitted single-run test
+bash Scripts/reproduce/eval_cross_dataset.sh            # Table VIII — zero-shot transfer
 ```
 
 Verified on an RTX 4080 with the released cascade on the 2k eval set:
